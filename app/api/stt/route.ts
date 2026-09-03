@@ -10,37 +10,6 @@ export const dynamic = "force-dynamic";
 /** Guard against oversized uploads; a voice turn is seconds, not minutes. */
 const MAX_BYTES = 25 * 1024 * 1024;
 
-// async function transcribeOpenAI(
-//   audio: File,
-//   model: string,
-//   language: string,
-//   key: string,
-// ): Promise<string> {
-//   const form = new FormData();
-//   form.append("file", audio, audio.name || "audio.webm");
-//   form.append("model", model);
-//   // "auto" means let the model detect it — omit the parameter entirely.
-//   if (language && language !== "auto") {
-//     form.append("language", language.split("-")[0]);
-//   }
-
-//   const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-//     method: "POST",
-//     headers: { Authorization: `Bearer ${key}` },
-//     body: form,
-//     cache: "no-store",
-//     signal: AbortSignal.timeout(60000),
-//   });
-
-//   if (!res.ok) {
-//     const detail = await res.text().catch(() => "");
-//     throw new Error(`OpenAI STT ${res.status}: ${detail.slice(0, 200)}`);
-//   }
-
-//   const data = await res.json();
-//   return (data.text ?? "").trim();
-// }
-
 async function transcribeGemini(
   audio: File,
   model: string,
@@ -149,7 +118,7 @@ export async function POST(request: Request) {
   }
 
   const audio = form.get("audio");
-  const provider = String(form.get("provider") ?? "openai");
+  const provider = String(form.get("provider"));
   const model = String(form.get("model") ?? "gpt-4o-transcribe");
   const language = String(form.get("language") ?? "auto");
 
@@ -189,9 +158,6 @@ export async function POST(request: Request) {
     } else if (provider === "sarvam") {
       text = await transcribeSarvam(audio, model, language, key);
     }
-    //  else if (provider === "openai") {
-    //   text = await transcribeOpenAI(audio, model, language, key);
-    // } 
     else {
       return Response.json(
         { error: `Transcription is not wired up for ${provider} yet.` },

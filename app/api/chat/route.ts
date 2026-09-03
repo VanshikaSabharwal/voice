@@ -25,94 +25,6 @@ function enabledTools(cfg: AgentConfig): string[] {
   return cfg.tools.filter((t) => t.enabled && TOOL_SCHEMAS[t.name]).map((t) => t.name);
 }
 
-// ---------------------------------------------------------------------------
-// OpenAI
-// ---------------------------------------------------------------------------
-
-type OpenAIMessage = {
-  role: string;
-  content: string | null;
-  tool_calls?: { id: string; type: string; function: { name: string; arguments: string } }[];
-  tool_call_id?: string;
-};
-
-async function runOpenAI(
-  cfg: AgentConfig,
-  history: ChatTurn[],
-  key: string,
-): Promise<{ text: string; toolsUsed: string[] }> {
-  const tools = enabledTools(cfg).map((name) => ({
-    type: "function",
-    function: {
-      name,
-      description: TOOL_SCHEMAS[name].description,
-      parameters: TOOL_SCHEMAS[name].parameters,
-    },
-  }));
-
-  const messages: OpenAIMessage[] = [
-    { role: "system", content: systemPromptFor(cfg) },
-    ...history.map((m) => ({ role: m.role, content: m.content })),
-  ];
-
-  const toolsUsed: string[] = [];
-
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      cache: "no-store",
-      signal: AbortSignal.timeout(30000),
-      body: JSON.stringify({
-        model: cfg.llm.model,
-        messages,
-        temperature: cfg.llm.temperature,
-        max_tokens: cfg.llm.maxTokens,
-        top_p: cfg.llm.topP,
-        frequency_penalty: cfg.llm.frequencyPenalty,
-        presence_penalty: cfg.llm.presencePenalty,
-        ...(tools.length > 0 ? { tools } : {}),
-      }),
-    });
-
-    if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      throw new Error(`OpenAI ${res.status}: ${detail.slice(0, 200)}`);
-    }
-
-    const data = await res.json();
-    const choice = data.choices?.[0];
-    const msg: OpenAIMessage | undefined = choice?.message;
-    if (!msg) throw new Error("OpenAI returned no message.");
-
-    if (msg.tool_calls?.length) {
-      messages.push(msg);
-      for (const call of msg.tool_calls) {
-        let args: Record<string, unknown> = {};
-        try {
-          args = JSON.parse(call.function.arguments || "{}");
-        } catch {
-          // Malformed arguments still get a result so the loop can continue.
-        }
-        toolsUsed.push(call.function.name);
-        const result = executeTool(call.function.name, args);
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: JSON.stringify(result),
-        });
-      }
-      continue;
-    }
-
-    return { text: msg.content?.trim() ?? "", toolsUsed };
-  }
-
-  return { text: "Sorry, I could not complete that request.", toolsUsed };
-}
 
 // ---------------------------------------------------------------------------
 // Gemini
@@ -240,10 +152,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const result =
-      cfg.llm.provider === "gemini"
-        ? await runGemini(cfg, history, key)
-        : await runOpenAI(cfg, history, key);
+    const result = await runGemini(cfg, history, key);
 
     if (!result.text) {
       return Response.json(

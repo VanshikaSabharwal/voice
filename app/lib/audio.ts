@@ -10,7 +10,6 @@
 
 /** Formats each STT provider will accept on upload. */
 const PROVIDER_FORMATS: Record<string, string[]> = {
-  openai: ["webm", "mp3", "wav", "mp4", "m4a"],
   // Inline audio data; broadly tolerant of container types.
   gemini: ["webm", "mp3", "wav", "mp4", "m4a"],
   sarvam: ["wav", "mp3"],

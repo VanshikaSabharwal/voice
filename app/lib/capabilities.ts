@@ -66,46 +66,7 @@ const COMMON_AUDIO = ["webm", "mp3", "wav"];
 // ---------------------------------------------------------------------------
 
 export const STT_CATALOG: ProviderCapability[] = [
-  {
-    provider: "openai",
-    label: "OpenAI",
-    modality: "stt",
-    voices: [],
-    models: [
-      {
-        id: "gpt-4o-transcribe",
-        label: "gpt-4o-transcribe",
-        languages: WIDE,
-        inputFormats: COMMON_AUDIO,
-        toolCalling: null,
-        contextWindow: null,
-        maxOutputTokens: null,
-        streaming: true,
-      },
-      {
-        id: "gpt-4o-mini-transcribe",
-        label: "gpt-4o-mini-transcribe",
-        languages: WIDE,
-        inputFormats: COMMON_AUDIO,
-        toolCalling: null,
-        contextWindow: null,
-        maxOutputTokens: null,
-        streaming: true,
-      },
-      {
-        id: "whisper-1",
-        label: "whisper-1",
-        languages: WIDE,
-        // Batch endpoint: no webm streaming ingest.
-        inputFormats: ["mp3", "wav"],
-        toolCalling: null,
-        contextWindow: null,
-        maxOutputTokens: null,
-        streaming: false,
-      },
-    ],
-  },
-  {
+   {
     provider: "gemini",
     label: "Gemini",
     modality: "stt",
@@ -180,44 +141,6 @@ export const STT_CATALOG: ProviderCapability[] = [
 // ---------------------------------------------------------------------------
 
 export const LLM_CATALOG: ProviderCapability[] = [
-  {
-    provider: "openai",
-    label: "OpenAI",
-    modality: "llm",
-    voices: [],
-    models: [
-      {
-        id: "gpt-4o",
-        label: "gpt-4o",
-        languages: WIDE,
-        inputFormats: null,
-        toolCalling: true,
-        contextWindow: 128000,
-        maxOutputTokens: 16384,
-        streaming: true,
-      },
-      {
-        id: "gpt-4o-mini",
-        label: "gpt-4o-mini",
-        languages: WIDE,
-        inputFormats: null,
-        toolCalling: true,
-        contextWindow: 128000,
-        maxOutputTokens: 16384,
-        streaming: true,
-      },
-      {
-        id: "gpt-4-turbo",
-        label: "gpt-4-turbo",
-        languages: WIDE,
-        inputFormats: null,
-        toolCalling: true,
-        contextWindow: 128000,
-        maxOutputTokens: 4096,
-        streaming: true,
-      },
-    ],
-  },
   {
     provider: "gemini",
     label: "Gemini",
@@ -374,43 +297,6 @@ export const TTS_CATALOG: ProviderCapability[] = [
         languages: ["en", "hi"],
         modelIds: ["sonic-multilingual"],
       },
-    ],
-  },
-  {
-    provider: "openai",
-    label: "OpenAI",
-    modality: "tts",
-    models: [
-      {
-        id: "tts-1",
-        label: "tts-1",
-        languages: WIDE,
-        inputFormats: null,
-        toolCalling: null,
-        contextWindow: null,
-        maxOutputTokens: null,
-        streaming: true,
-      },
-      {
-        id: "tts-1-hd",
-        label: "tts-1-hd",
-        languages: WIDE,
-        inputFormats: null,
-        toolCalling: null,
-        contextWindow: null,
-        maxOutputTokens: null,
-        streaming: false,
-      },
-    ],
-    // OpenAI voices follow the model's language coverage rather than being
-    // locked to one language.
-    voices: [
-      { id: "alloy", label: "alloy", languages: WIDE, modelIds: null },
-      { id: "echo", label: "echo", languages: WIDE, modelIds: null },
-      { id: "fable", label: "fable", languages: WIDE, modelIds: null },
-      { id: "onyx", label: "onyx", languages: WIDE, modelIds: null },
-      { id: "nova", label: "nova", languages: WIDE, modelIds: null },
-      { id: "shimmer", label: "shimmer", languages: WIDE, modelIds: null },
     ],
   },
   {

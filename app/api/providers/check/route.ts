@@ -16,10 +16,6 @@ export const dynamic = "force-dynamic";
 
 /** Cheapest authenticated GET per provider. */
 const ENDPOINT: Record<string, (key: string) => { url: string; headers: HeadersInit }> = {
-  openai: (key) => ({
-    url: "https://api.openai.com/v1/models",
-    headers: { Authorization: `Bearer ${key}` },
-  }),
   gemini: (key) => ({
     url: `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
     headers: {},

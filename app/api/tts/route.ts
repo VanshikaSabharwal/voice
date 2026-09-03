@@ -61,38 +61,6 @@ async function speakElevenLabs(
   });
 }
 
-async function speakOpenAI(
-  text: string,
-  model: string,
-  voice: string,
-  key: string,
-): Promise<Response> {
-  const res = await fetch("https://api.openai.com/v1/audio/speech", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
-    cache: "no-store",
-    signal: AbortSignal.timeout(45000),
-    body: JSON.stringify({
-      model,
-      voice: voice.toLowerCase(),
-      input: text,
-      response_format: "mp3",
-    }),
-  });
-
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`OpenAI TTS ${res.status}: ${detail.slice(0, 200)}`);
-  }
-
-  return new Response(await res.arrayBuffer(), {
-    headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store" },
-  });
-}
-
 async function speakCartesia(
   text: string,
   model: string,
@@ -209,7 +177,6 @@ export async function POST(request: Request) {
 
   try {
     if (provider === "elevenlabs") return await speakElevenLabs(text, model, voice, key);
-    if (provider === "openai") return await speakOpenAI(text, model, voice, key);
     if (provider === "cartesia")
       return await speakCartesia(text, model, voice, language, key);
     if (provider === "sarvam")

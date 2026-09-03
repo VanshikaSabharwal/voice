@@ -6,7 +6,7 @@
  *  1. A rule may only fire on a KNOWN capability. Every rule guards `!== null`
  *     first, so unknown data is silently accepted.
  *  2. No rule compares one provider to another. Compatibility is judged from
- *     capabilities alone, so mixing vendors (OpenAI STT -> Gemini LLM ->
+ *     capabilities alone, so mixing vendors (Gemini LLM ->
  *     ElevenLabs TTS) can never produce a finding.
  */
 

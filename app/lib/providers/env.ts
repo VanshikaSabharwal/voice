@@ -10,7 +10,6 @@
  */
 
 const ENV_VAR: Record<string, string> = {
-  openai: "OPENAI_API_KEY",
   gemini: "GOOGLE_API_KEY",
   elevenlabs: "ELEVENLABS_API_KEY",
   cartesia: "CARTESIA_API_KEY",
@@ -23,7 +22,7 @@ const ENV_VAR: Record<string, string> = {
  * checking them would require a billable inference call, so Test Connection
  * reports them as unavailable rather than spending credits.
  */
-const PROBEABLE = new Set(["openai", "gemini", "elevenlabs", "cartesia"]);
+const PROBEABLE = new Set(["gemini", "elevenlabs", "cartesia"]);
 
 export function keyFor(provider: string): string | undefined {
   const name = ENV_VAR[provider];
