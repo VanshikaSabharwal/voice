@@ -1,8 +1,7 @@
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
-import { AgentConfig, LANGUAGES } from "../lib/types";
-import { DEFAULT_CONFIG } from "../lib/types";
+import { useMemo, useState } from "react";
+import { LANGUAGES, type AgentConfig } from "../lib/types";
 import {
   providersFor, modelsFor, voicesFor, firstModelId, firstVoiceId,
   unsupportedFormats, firstSupportedFormat, firstVoiceForModel, findVoice,
@@ -13,7 +12,7 @@ import {
   type Finding, type Section,
 } from "../lib/validate";
 import { useValidation } from "../lib/useValidation";
-import { PRESETS } from "../lib/presets";
+import { useConfig } from "../lib/ConfigContext";
 import { Field, Select, TextInput, Slider, SectionCard } from "../components/Fields";
 import ValidationStatus from "../components/ValidationStatus";
 import { SaveIcon, MicIcon, SparkIcon, WaveIcon, ToolIcon, PlusIcon, TrashIcon } from "../components/Icons";
@@ -41,36 +40,13 @@ export default function SettingsPage() {
   const STORAGE_KEY = "agent-config";
 const CONFIG_ID = "default-agent";
 
-const [cfg, setCfg] = useState<AgentConfig>(DEFAULT_CONFIG);
-const [loading, setLoading] = useState(true);
+/* Edit the SHARED config, not a private copy. The Voice Bot page and the
+   sidebar both read this same context, so a provider chosen here is the one
+   the next turn actually uses. A local useState here would leave Settings
+   showing Sarvam while the bot still called Gemini.
 
-useEffect(() => {
-  async function loadConfig() {
-    try {
-      const response = await fetch("/api/configs");
-
-      if (!response.ok) {
-        throw new Error("Failed to load configurations");
-      }
-
-      const data = await response.json();
-
-      const saved = data.configs.find(
-        (item: { id: string }) => item.id === CONFIG_ID,
-      );
-
-      if (saved?.config) {
-        setCfg(saved.config);
-      }
-    } catch (error) {
-      console.error("Failed to load config:", error);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  loadConfig();
-}, []);
+   Loading is the provider's job — doing it here too would race it. */
+const { cfg, setCfg, ready } = useConfig();
 
   const { findings, probeRan } = useValidation(cfg);
   const blocked = hasBlockingErrors(findings);
@@ -82,7 +58,9 @@ useEffect(() => {
   }
 
 async function save() {
-  if (blocked) return;
+  // Saving before the stored config has loaded would persist the defaults
+  // over it, silently discarding whatever was already saved.
+  if (blocked || !ready) return;
   setSaveError(null);
 
   try {
@@ -220,16 +198,16 @@ async function save() {
         </div>
         <button
           onClick={save}
-          disabled={blocked}
+          disabled={blocked || !ready}
           title={blocked ? blockingError?.message : undefined}
           className={`flex shrink-0 items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition
-            ${blocked
+            ${blocked || !ready
               ? "cursor-not-allowed bg-[var(--border-strong)] text-white/80"
               : "bg-[var(--brand)] text-white hover:bg-[var(--brand-hover)]"
             }`}
         >
           <SaveIcon className="h-4 w-4" />
-          {saved ? "Saved" : "Validate & Save"}
+          {!ready ? "Loading…" : saved ? "Saved" : "Validate & Save"}
         </button>
       </header>
 

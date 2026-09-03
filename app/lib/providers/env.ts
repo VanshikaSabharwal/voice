@@ -11,6 +11,7 @@
 
 const ENV_VAR: Record<string, string> = {
   gemini: "GOOGLE_API_KEY",
+  groq: "GROQ_API_KEY",
   elevenlabs: "ELEVENLABS_API_KEY",
   cartesia: "CARTESIA_API_KEY",
   sarvam: "SARVAM_API_KEY",

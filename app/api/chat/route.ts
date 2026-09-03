@@ -125,6 +125,110 @@ async function runGemini(
 }
 
 // ---------------------------------------------------------------------------
+// Groq (OpenAI-compatible chat completions)
+// ---------------------------------------------------------------------------
+
+type OpenAIToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+};
+
+type OpenAIMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_calls?: OpenAIToolCall[];
+  tool_call_id?: string;
+};
+
+async function runGroq(
+  cfg: AgentConfig,
+  history: ChatTurn[],
+  key: string,
+): Promise<{ text: string; toolsUsed: string[] }> {
+  const names = enabledTools(cfg);
+  const tools =
+    names.length > 0
+      ? names.map((name) => ({
+          type: "function" as const,
+          function: {
+            name,
+            description: TOOL_SCHEMAS[name].description,
+            parameters: TOOL_SCHEMAS[name].parameters,
+          },
+        }))
+      : undefined;
+
+  // OpenAI-style: the system prompt is a message, not a separate field.
+  const messages: OpenAIMessage[] = [
+    { role: "system", content: systemPromptFor(cfg) },
+    ...history.map((m) => ({ role: m.role, content: m.content })),
+  ];
+
+  const toolsUsed: string[] = [];
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      cache: "no-store",
+      signal: AbortSignal.timeout(30000),
+      body: JSON.stringify({
+        model: cfg.llm.model,
+        messages,
+        temperature: cfg.llm.temperature,
+        max_tokens: cfg.llm.maxTokens,
+        top_p: cfg.llm.topP,
+        frequency_penalty: cfg.llm.frequencyPenalty,
+        presence_penalty: cfg.llm.presencePenalty,
+        ...(tools ? { tools, tool_choice: "auto" } : {}),
+      }),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(`Groq ${res.status}: ${detail.slice(0, 200)}`);
+    }
+
+    const data = await res.json();
+    const message: OpenAIMessage | undefined = data.choices?.[0]?.message;
+    const calls = message?.tool_calls ?? [];
+
+    if (calls.length > 0) {
+      // The assistant turn carrying the calls must be echoed back verbatim,
+      // then one tool message per call, matched by tool_call_id.
+      messages.push(message!);
+
+      for (const call of calls) {
+        toolsUsed.push(call.function.name);
+
+        // Arguments arrive as a JSON string; a malformed one must not throw.
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(call.function.arguments || "{}");
+        } catch {
+          args = {};
+        }
+
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify(executeTool(call.function.name, args)),
+        });
+      }
+      continue;
+    }
+
+    return { text: (message?.content ?? "").trim(), toolsUsed };
+  }
+
+  return { text: "Sorry, I could not complete that request.", toolsUsed };
+}
+
+// ---------------------------------------------------------------------------
 
 export async function POST(request: Request) {
   let body: { config?: AgentConfig; messages?: ChatTurn[] };
@@ -176,7 +280,10 @@ if (!cfg) {
   }
 
   try {
-    const result = await runGemini(cfg, history, key);
+    const result =
+      cfg.llm.provider === "groq"
+        ? await runGroq(cfg, history, key)
+        : await runGemini(cfg, history, key);
 
     if (!result.text) {
       return Response.json(

@@ -162,6 +162,53 @@ export const LLM_CATALOG: ProviderCapability[] = [
       },
     ],
   },
+  {
+    provider: "groq",
+    label: "Groq",
+    modality: "llm",
+    voices: [],
+    /*
+     * OpenAI-compatible chat completions. Ids below must match Groq's live
+     * model list — verify with:
+     *   curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer $GROQ_API_KEY"
+     *
+     * Language support is left null (unknown): these are broadly multilingual
+     * but Groq publishes no per-language guarantee, and per this file's
+     * convention a null must never raise a finding.
+     */
+    models: [
+      {
+        id: "openai/gpt-oss-120b",
+        label: "gpt-oss-120b",
+        languages: null,
+        inputFormats: null,
+        toolCalling: true,
+        contextWindow: 131072,
+        maxOutputTokens: 32768,
+        streaming: true,
+      },
+      {
+        id: "openai/gpt-oss-20b",
+        label: "gpt-oss-20b (faster)",
+        languages: null,
+        inputFormats: null,
+        toolCalling: true,
+        contextWindow: 131072,
+        maxOutputTokens: 32768,
+        streaming: true,
+      },
+      {
+        id: "qwen/qwen3.8-27b",
+        label: "qwen3.8-27b",
+        languages: null,
+        inputFormats: null,
+        toolCalling: true,
+        contextWindow: 131072,
+        maxOutputTokens: 32768,
+        streaming: true,
+      },
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
