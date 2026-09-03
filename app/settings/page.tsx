@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { AgentConfig, LANGUAGES } from "../lib/types";
-import { useConfig } from "../lib/ConfigContext";
+import { DEFAULT_CONFIG } from "../lib/types";
 import {
   providersFor, modelsFor, voicesFor, firstModelId, firstVoiceId,
 } from "../lib/capabilities";
@@ -33,9 +33,42 @@ const SECTION_TAB: Record<Section, Tab> = {
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>("General");
-  const { cfg, setCfg, activeId, setActiveId } = useConfig();
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  const STORAGE_KEY = "agent-config";
+const CONFIG_ID = "default-agent";
+
+const [cfg, setCfg] = useState<AgentConfig>(DEFAULT_CONFIG);
+const [loading, setLoading] = useState(true);
+
+useEffect(() => {
+  async function loadConfig() {
+    try {
+      const response = await fetch("/api/configs");
+
+      if (!response.ok) {
+        throw new Error("Failed to load configurations");
+      }
+
+      const data = await response.json();
+
+      const saved = data.configs.find(
+        (item: { id: string }) => item.id === CONFIG_ID,
+      );
+
+      if (saved?.config) {
+        setCfg(saved.config);
+      }
+    } catch (error) {
+      console.error("Failed to load config:", error);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  loadConfig();
+}, []);
 
   const { findings, probeRan } = useValidation(cfg);
   const blocked = hasBlockingErrors(findings);
@@ -46,33 +79,36 @@ export default function SettingsPage() {
     setCfg((c) => ({ ...c, [key]: { ...(c[key] as object), ...value } }));
   }
 
-  async function save() {
-    if (blocked) return;
-    setSaveError(null);
+async function save() {
+  if (blocked) return;
+  setSaveError(null);
 
-    // Built-in presets are read-only; saving one creates a copy.
-    const id =
-      activeId && !PRESETS.some((p) => p.id === activeId)
-        ? activeId
-        : `cfg-${Date.now()}`;
+  try {
+    const response = await fetch("/api/configs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: CONFIG_ID, name: cfg.name, config: cfg }),
+    });
 
-    try {
-      const res = await fetch("/api/configs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, name: cfg.name, config: cfg }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Save failed (${res.status})`);
-      }
-      setActiveId(id);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 1800);
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Save failed");
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || "Failed to save configuration.");
     }
+
+    // Best-effort browser copy; never fail a completed save over it.
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+    } catch {}
+
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1800);
+  } catch (error) {
+    setSaveError(
+      error instanceof Error ? error.message : "Failed to save configuration.",
+    );
   }
+}
+
 
   /** Apply a one-click fix from a finding. */
   function applyFix(fix: NonNullable<Finding["fix"]>) {
@@ -176,10 +212,10 @@ export default function SettingsPage() {
                 </Field>
                 <Field label="Language">
                   <Select
-                    value={cfg.language}
-                    onChange={(v) => setCfg({ ...cfg, language: v })}
-                    options={LANGUAGES}
-                  />
+  value={cfg.language}
+  onChange={(v) => setCfg({ ...cfg, language: v })}
+  options={LANGUAGES}
+/>
                 </Field>
               </div>
               <Field label="System Prompt" className="mt-4">

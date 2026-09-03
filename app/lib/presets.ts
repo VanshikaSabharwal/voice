@@ -30,7 +30,7 @@ const hindiSupport: AgentConfig = {
     "आप हमारी कंपनी के लिए एक सहायक सेवा एजेंट हैं। ग्राहकों की सेवा अनुरोधों में मदद करें, स्थिति बताएं और सवालों के जवाब दें। हमेशा विनम्र और स्पष्ट रहें।",
   // saaras:v3 covers the Indic set; wav is within its accepted formats.
   stt: { provider: "sarvam", model: "saaras:v3", language: "hi" },
-  llm: { ...DEFAULT_CONFIG.llm, provider: "gemini", model: "gemini-2.5-flash" },
+  llm: { ...DEFAULT_CONFIG.llm, provider: "gemini", model: "gemini-3.6-flash" },
   // bulbul:v3 speaks Hindi and "priya" is a Hindi-capable speaker.
   tts: {
     provider: "sarvam",

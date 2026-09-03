@@ -7,6 +7,8 @@
  */
 
 import { keyFor } from "../../lib/providers/env";
+import { findModel } from "../../lib/capabilities";
+import { getAgentConfig } from "../../lib/config";
 import { executeTool, TOOL_SCHEMAS } from "../../lib/tools";
 import type { AgentConfig, ChatTurn } from "../../lib/types";
 
@@ -133,12 +135,34 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const cfg = body.config;
-  const history = Array.isArray(body.messages) ? body.messages : [];
+const history = Array.isArray(body.messages) ? body.messages : [];
 
-  if (!cfg || history.length === 0) {
+if (history.length === 0) {
+  return Response.json(
+    { error: "A non-empty messages array is required." },
+    { status: 400 },
+  );
+}
+
+// Prefer the config the client is actually running, so switching preset in the
+// sidebar drives the LLM the same way it already drives STT and TTS. Fall back
+// to the stored config for callers that post only messages.
+const cfg = body.config ?? (await getAgentConfig("default-agent"));
+
+if (!cfg) {
+  return Response.json(
+    { error: "No saved agent configuration found." },
+    { status: 404 },
+  );
+}
+
+  // The config now arrives from the client, so the model must be one this app
+  // actually offers — never an arbitrary string interpolated into the API URL.
+  if (!findModel("llm", cfg.llm.provider, cfg.llm.model)) {
     return Response.json(
-      { error: "config and a non-empty messages array are required." },
+      {
+        error: `${cfg.llm.model} is not an available model for ${cfg.llm.provider}.`,
+      },
       { status: 400 },
     );
   }

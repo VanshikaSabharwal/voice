@@ -84,8 +84,8 @@ export const STT_CATALOG: ProviderCapability[] = [
         streaming: true,
       },
       {
-        id: "gemini-2.5-flash",
-        label: "gemini-2.5-flash",
+        id: "gemini-3.5-transcribe",
+        label: "gemini-3.5-transcribe",
         languages: WIDE,
         inputFormats: COMMON_AUDIO,
         toolCalling: null,
@@ -161,16 +161,6 @@ export const LLM_CATALOG: ProviderCapability[] = [
       {
         id: "gemini-3.5-flash",
         label: "gemini-3.5-flash",
-        languages: WIDE,
-        inputFormats: null,
-        toolCalling: true,
-        contextWindow: 1048576,
-        maxOutputTokens: 65536,
-        streaming: true,
-      },
-      {
-        id: "gemini-2.5-flash",
-        label: "gemini-2.5-flash",
         languages: WIDE,
         inputFormats: null,
         toolCalling: true,

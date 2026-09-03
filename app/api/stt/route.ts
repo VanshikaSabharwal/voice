@@ -16,53 +16,147 @@ async function transcribeGemini(
   language: string,
   key: string,
 ): Promise<string> {
-  const bytes = Buffer.from(await audio.arrayBuffer()).toString("base64");
-  const hint =
-    language && language !== "auto"
-      ? ` The audio is in ${language}.`
-      : "";
+  const bytes = Buffer.from(await audio.arrayBuffer());
+
+  // Browser recordings can report:
+  // audio/webm;codecs=opus
+  //
+  // Gemini expects the container MIME type, so normalize it to:
+  // audio/webm
+  const uploadMimeType = audio.type.split(";")[0] || "audio/webm";
+
+  console.log("Gemini STT:", {
+    model,
+    language,
+    audioType: audio.type,
+    uploadMimeType,
+    audioName: audio.name,
+    audioSize: audio.size,
+  });
+
+  // -------------------------------------------------------------------------
+  // 1. Upload audio to Gemini Files API
+  // -------------------------------------------------------------------------
+
+  const uploadRes = await fetch(
+    `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${encodeURIComponent(
+      key,
+    )}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": uploadMimeType,
+        "X-Goog-Upload-Protocol": "raw",
+        "X-Goog-Upload-File-Name": audio.name || "audio.webm",
+      },
+      body: bytes,
+      signal: AbortSignal.timeout(60000),
+    },
+  );
+
+  if (!uploadRes.ok) {
+    const detail = await uploadRes.text().catch(() => "");
+
+    console.error("Gemini file upload error:", detail);
+
+    throw new Error(
+      `Gemini file upload ${uploadRes.status}: ${detail.slice(0, 1000)}`,
+    );
+  }
+
+  const uploaded = await uploadRes.json();
+
+  console.log("Gemini uploaded file:", uploaded);
+
+  const fileUri = uploaded.file?.uri;
+  const mimeType = uploaded.file?.mimeType || uploadMimeType;
+
+  if (!fileUri) {
+    throw new Error(
+      "Gemini file upload succeeded but no file URI was returned.",
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // 2. Send uploaded audio to Gemini Transcribe
+  // -------------------------------------------------------------------------
+
+  // For "auto", omit the transcription configuration.
+  // Gemini will automatically detect the language.
+  const body: Record<string, unknown> = {
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            fileData: {
+              fileUri,
+              mimeType,
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  // Only provide a language when the user explicitly selected one.
+  if (language && language !== "auto") {
+    body.generationConfig = {
+      audioTranscriptionConfig: {
+        languageCodes: [
+          language.includes("-") ? language : `${language}-IN`,
+        ],
+      },
+    };
+  }
 
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
       model,
-    )}:generateContent?key=${encodeURIComponent(key)}`,
+    )}:generateContent`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": key,
+      },
       cache: "no-store",
       signal: AbortSignal.timeout(60000),
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                text: `Transcribe this audio verbatim. Return only the transcript with no commentary.${hint}`,
-              },
-              {
-                inlineData: {
-                  mimeType: audio.type || "audio/webm",
-                  data: bytes,
-                },
-              },
-            ],
-          },
-        ],
-      }),
+      body: JSON.stringify(body),
     },
   );
 
+  // Read the response once so we can log the exact Gemini response.
+  const rawResponse = await res.text();
+
+  console.log("Gemini STT response:", rawResponse);
+
   if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`Gemini STT ${res.status}: ${detail.slice(0, 200)}`);
+    throw new Error(
+      `Gemini STT ${res.status}: ${rawResponse.slice(0, 1000)}`,
+    );
   }
 
-  const data = await res.json();
-  const parts = data.candidates?.[0]?.content?.parts ?? [];
-  return parts
-    .map((p: { text?: string }) => p.text ?? "")
+  let data: any;
+
+  try {
+    data = JSON.parse(rawResponse);
+  } catch {
+    throw new Error("Gemini returned an invalid JSON response.");
+  }
+
+  // Dedicated transcription models (gemini-*-transcribe) return the transcript
+  // as an `audioTranscription` part; the general multimodal models return an
+  // ordinary `text` part for the same request. Accept either shape.
+  const text = data.candidates?.[0]?.content?.parts
+    ?.map(
+      (p: { text?: string; audioTranscription?: { text?: string } }) =>
+        p.text ?? p.audioTranscription?.text ?? "",
+    )
     .join("")
     .trim();
+
+  return text || "";
 }
 
 async function transcribeSarvam(
@@ -80,9 +174,12 @@ async function transcribeSarvam(
       : audio.name || "audio.wav";
 
   const form = new FormData();
+
   form.append("file", audio, name);
   form.append("model", model);
-  // Sarvam expects a full BCP-47 tag; default to Hindi-India for the Indic path.
+
+  // Sarvam expects a full BCP-47 tag.
+  // Default to Hindi-India for the Indic path.
   form.append(
     "language_code",
     language && language !== "auto"
@@ -94,7 +191,9 @@ async function transcribeSarvam(
 
   const res = await fetch("https://api.sarvam.ai/speech-to-text", {
     method: "POST",
-    headers: { "api-subscription-key": key },
+    headers: {
+      "api-subscription-key": key,
+    },
     body: form,
     cache: "no-store",
     signal: AbortSignal.timeout(60000),
@@ -102,19 +201,29 @@ async function transcribeSarvam(
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    throw new Error(`Sarvam STT ${res.status}: ${detail.slice(0, 200)}`);
+
+    console.error("Sarvam STT error:", detail);
+
+    throw new Error(
+      `Sarvam STT ${res.status}: ${detail.slice(0, 1000)}`,
+    );
   }
 
   const data = await res.json();
+
   return (data.transcript ?? "").trim();
 }
 
 export async function POST(request: Request) {
   let form: FormData;
+
   try {
     form = await request.formData();
   } catch {
-    return Response.json({ error: "Expected multipart form data." }, { status: 400 });
+    return Response.json(
+      { error: "Expected multipart form data." },
+      { status: 400 },
+    );
   }
 
   const audio = form.get("audio");
@@ -123,13 +232,21 @@ export async function POST(request: Request) {
   const language = String(form.get("language") ?? "auto");
 
   if (!(audio instanceof File) || audio.size === 0) {
-    return Response.json({ error: "No audio supplied." }, { status: 400 });
+    return Response.json(
+      { error: "No audio supplied." },
+      { status: 400 },
+    );
   }
+
   if (audio.size > MAX_BYTES) {
-    return Response.json({ error: "Audio file too large." }, { status: 413 });
+    return Response.json(
+      { error: "Audio file too large." },
+      { status: 413 },
+    );
   }
 
   const key = keyFor(provider);
+
   if (!key) {
     return Response.json(
       { error: `No API key configured for ${provider}.` },
@@ -137,8 +254,8 @@ export async function POST(request: Request) {
     );
   }
 
-  // Sarvam and Smallest reject WebM/Opus outright. The client converts to WAV
-  // first, so reaching here with WebM means that conversion failed.
+  // Sarvam and Smallest reject WebM/Opus outright.
+  // The client should convert these recordings to WAV first.
   if (
     (provider === "sarvam" || provider === "smallest") &&
     audio.type.toLowerCase().includes("webm")
@@ -153,28 +270,52 @@ export async function POST(request: Request) {
 
   try {
     let text: string;
+
     if (provider === "gemini") {
-      text = await transcribeGemini(audio, model, language, key);
+      text = await transcribeGemini(
+        audio,
+        model,
+        language,
+        key,
+      );
     } else if (provider === "sarvam") {
-      text = await transcribeSarvam(audio, model, language, key);
-    }
-    else {
+      text = await transcribeSarvam(
+        audio,
+        model,
+        language,
+        key,
+      );
+    } else {
       return Response.json(
-        { error: `Transcription is not wired up for ${provider} yet.` },
+        {
+          error: `Transcription is not wired up for ${provider} yet.`,
+        },
         { status: 400 },
       );
     }
 
     if (!text) {
       return Response.json(
-        { error: "Nothing was transcribed. Try speaking for longer." },
+        {
+          error: "Nothing was transcribed. Try speaking for longer.",
+        },
         { status: 422 },
       );
     }
 
     return Response.json({ text });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Transcription failed.";
-    return Response.json({ error: message }, { status: 502 });
+    const message =
+      err instanceof Error
+        ? err.message
+        : "Transcription failed.";
+
+    console.error("STT error:", err);
+
+    return Response.json(
+      { error: message },
+      { status: 502 },
+    );
   }
 }
+

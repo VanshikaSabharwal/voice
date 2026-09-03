@@ -77,11 +77,11 @@ export const DEFAULT_CONFIG: AgentConfig = {
   systemPrompt:
     "You are a helpful service assistant for our company. Your job is to help users with their service requests, check status, provide updates and answer questions. Always be polite, concise and accurate.",
 
-  stt: { provider: "gemini", model: "gemini-2.5-flash", language: "auto" },
+  stt: { provider: "gemini", model: "gemini-3.5-transcribe", language: "auto" },
 
   llm: {
     provider: "gemini",
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     temperature: 0.3,
     // Reasoning models spend part of this budget thinking, so a low cap can
     // truncate the spoken reply mid-sentence.
