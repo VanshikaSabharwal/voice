@@ -116,24 +116,6 @@ export const STT_CATALOG: ProviderCapability[] = [
       },
     ],
   },
-  {
-    provider: "smallest",
-    label: "Smallest AI",
-    modality: "stt",
-    voices: [],
-    models: [
-      {
-        id: "electron-v1",
-        label: "electron-v1",
-        languages: ["en", "en-IN", "hi"],
-        inputFormats: ["wav", "mp3"],
-        toolCalling: null,
-        contextWindow: null,
-        maxOutputTokens: null,
-        streaming: true,
-      },
-    ],
-  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -256,11 +238,13 @@ export const TTS_CATALOG: ProviderCapability[] = [
     provider: "cartesia",
     label: "Cartesia",
     modality: "tts",
+    // sonic-english/sonic-multilingual were sunsetted by Cartesia and now 400.
+    // Language sets below were probed against the live API per model.
     models: [
       {
-        id: "sonic-english",
-        label: "sonic-english",
-        languages: ["en"],
+        id: "sonic-3",
+        label: "sonic-3",
+        languages: WIDE,
         inputFormats: null,
         toolCalling: null,
         contextWindow: null,
@@ -268,8 +252,8 @@ export const TTS_CATALOG: ProviderCapability[] = [
         streaming: true,
       },
       {
-        id: "sonic-multilingual",
-        label: "sonic-multilingual",
+        id: "sonic-turbo",
+        label: "sonic-turbo",
         languages: ["en", "en-IN", "hi"],
         inputFormats: null,
         toolCalling: null,
@@ -277,16 +261,23 @@ export const TTS_CATALOG: ProviderCapability[] = [
         maxOutputTokens: null,
         streaming: true,
       },
-    ],
-    voices: [
-      { id: "Sophie", label: "Sophie", languages: ["en"], modelIds: null },
-      { id: "Marcus", label: "Marcus", languages: ["en"], modelIds: null },
       {
-        id: "Nova",
-        label: "Nova (multilingual)",
-        languages: ["en", "hi"],
-        modelIds: ["sonic-multilingual"],
+        id: "sonic-2",
+        label: "sonic-2",
+        languages: ["en", "en-IN"],
+        inputFormats: null,
+        toolCalling: null,
+        contextWindow: null,
+        maxOutputTokens: null,
+        streaming: true,
       },
+    ],
+    // All three voices accept every current model; language range comes from
+    // the model, so these are left unrestricted.
+    voices: [
+      { id: "Sophie", label: "Sophie", languages: null, modelIds: null },
+      { id: "Marcus", label: "Marcus", languages: null, modelIds: null },
+      { id: "Nova", label: "Nova", languages: null, modelIds: null },
     ],
   },
   {
@@ -400,4 +391,89 @@ export function supportsLanguage(
   if (languages === null) return true;
   if (lang === "auto") return true;
   return languages.includes(lang);
+}
+
+// ---------------------------------------------------------------------------
+// Derived-option selectors
+//
+// These drive the "impossible options are not selectable" behaviour in
+// Settings. They are computed from the catalog alone, so adding a model or
+// voice needs no UI change — the dropdowns follow automatically.
+//
+// Only fields that STRICTLY DERIVE from another field are filtered here:
+// recording format follows from the STT model, and voice follows from the TTS
+// model. Where two independent choices conflict (agent language vs STT model),
+// filtering would hide the user's own earlier choice, so those stay as
+// validator errors with a suggested-alternatives list instead.
+// ---------------------------------------------------------------------------
+
+/** Recording formats the chosen STT model cannot accept. */
+export function unsupportedFormats(
+  provider: string,
+  modelId: string,
+  allFormats: string[],
+): Set<string> {
+  const model = findModel("stt", provider, modelId);
+  // Unknown capability accepts everything, per the null convention.
+  if (!model || model.inputFormats === null) return new Set();
+  return new Set(allFormats.filter((f) => !model.inputFormats!.includes(f)));
+}
+
+/** A format the chosen STT model does accept, for auto-correcting on switch. */
+export function firstSupportedFormat(
+  provider: string,
+  modelId: string,
+  allFormats: string[],
+  preferred: string,
+): string {
+  const model = findModel("stt", provider, modelId);
+  if (!model || model.inputFormats === null) return preferred;
+  if (model.inputFormats.includes(preferred)) return preferred;
+  return allFormats.find((f) => model.inputFormats!.includes(f)) ?? preferred;
+}
+
+/** A voice valid for the given model, for auto-correcting on model switch. */
+export function firstVoiceForModel(provider: string, modelId: string): string {
+  const p = findProvider("tts", provider);
+  if (!p) return "";
+  const v =
+    p.voices.find((x) => x.modelIds === null || x.modelIds.includes(modelId)) ??
+    p.voices[0];
+  return v?.id ?? "";
+}
+
+/**
+ * Models of one modality that can handle `lang`, as human-readable labels.
+ * Used to answer "so what SHOULD I pick?" in an error message.
+ */
+export function modelsSupportingLanguage(
+  modality: Modality,
+  lang: LangCode,
+): { provider: string; providerLabel: string; model: string }[] {
+  const out: { provider: string; providerLabel: string; model: string }[] = [];
+  for (const p of CATALOGS[modality]) {
+    for (const m of p.models) {
+      if (supportsLanguage(m.languages, lang)) {
+        out.push({ provider: p.provider, providerLabel: p.label, model: m.label });
+      }
+    }
+  }
+  return out;
+}
+
+/** Same, for TTS voices that can speak `lang` on a given model. */
+export function voicesSupportingLanguage(
+  provider: string,
+  modelId: string,
+  lang: LangCode,
+): string[] {
+  const p = findProvider("tts", provider);
+  if (!p) return [];
+  return p.voices
+    .filter(
+      (v) =>
+        supportsLanguage(v.languages, lang) &&
+        (v.modelIds === null || v.modelIds.includes(modelId)),
+    )
+    .map((v) => v.label);
 }

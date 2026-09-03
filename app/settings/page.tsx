@@ -5,6 +5,7 @@ import { AgentConfig, LANGUAGES } from "../lib/types";
 import { DEFAULT_CONFIG } from "../lib/types";
 import {
   providersFor, modelsFor, voicesFor, firstModelId, firstVoiceId,
+  unsupportedFormats, firstSupportedFormat, firstVoiceForModel, findVoice,
 } from "../lib/capabilities";
 import {
   findingsFor, sectionStatus, hasBlockingErrors, firstError,
@@ -13,11 +14,11 @@ import {
 } from "../lib/validate";
 import { useValidation } from "../lib/useValidation";
 import { PRESETS } from "../lib/presets";
-import { Field, Select, TextInput, Slider, SectionCard, Toggle } from "../components/Fields";
+import { Field, Select, TextInput, Slider, SectionCard } from "../components/Fields";
 import ValidationStatus from "../components/ValidationStatus";
 import { SaveIcon, MicIcon, SparkIcon, WaveIcon, ToolIcon, PlusIcon, TrashIcon } from "../components/Icons";
 
-const TABS = ["General", "Agent", "STT", "LLM", "TTS", "Tools", "Advanced"] as const;
+const TABS = ["General", "Agent", "STT", "LLM", "TTS", "Tools"] as const;
 type Tab = (typeof TABS)[number];
 
 /** Which tab a finding's section belongs to, for the "View" jump. */
@@ -28,7 +29,8 @@ const SECTION_TAB: Record<Section, Tab> = {
   llm: "LLM",
   tts: "TTS",
   tools: "Tools",
-  advanced: "Advanced",
+  // The Advanced tab was removed; its findings surface on General instead.
+  advanced: "General",
 };
 
 export default function SettingsPage() {
@@ -129,19 +131,81 @@ async function save() {
   const markedVoices = useMemo(() => invalidVoiceIds(cfg), [cfg]);
   const unusableVoices = useMemo(() => disabledVoiceIds(cfg), [cfg]);
 
+  /* Recording format derives from the STT model, so formats the model cannot
+     accept are rendered unselectable rather than left to fail validation.
+     They stay visible (struck through with ✕) so the constraint is legible. */
+  /* Order matters: when a model rejects the current format we fall back to the
+     first one it accepts, and WAV is the only re-encode the browser can
+     actually perform (see toWav in lib/audio), so it precedes MP3 here. */
+  const RECORDING_FORMATS = [
+    { value: "webm", label: "WebM (Opus)" },
+    { value: "wav", label: "WAV (PCM)" },
+    { value: "mp3", label: "MP3" },
+  ];
+  const unusableFormats = useMemo(
+    () =>
+      unsupportedFormats(
+        cfg.stt.provider,
+        cfg.stt.model,
+        RECORDING_FORMATS.map((f) => f.value),
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cfg.stt.provider, cfg.stt.model],
+  );
+
   /* Switching provider invalidates the current model/voice, so reset to that
-     provider's first option rather than leaving a stale incompatible value. */
+     provider's first option rather than leaving a stale incompatible value.
+
+     Fields that DERIVE from the model (recording format, voice) are pulled to a
+     valid value in the same update, so the user is never left holding a
+     combination the next screen would reject. */
   function setSttProvider(provider: string) {
-    patch("stt", { provider, model: firstModelId("stt", provider) });
+    const model = firstModelId("stt", provider);
+    applySttModel(provider, model);
   }
+  function setSttModel(model: string) {
+    applySttModel(cfg.stt.provider, model);
+  }
+  /** Set STT provider/model and correct the recording format to match. */
+  function applySttModel(provider: string, model: string) {
+    const format = firstSupportedFormat(
+      provider,
+      model,
+      RECORDING_FORMATS.map((f) => f.value),
+      cfg.general.recordingFormat,
+    );
+    setCfg((c) => ({
+      ...c,
+      stt: { ...c.stt, provider, model },
+      general: { ...c.general, recordingFormat: format },
+    }));
+  }
+
   function setLlmProvider(provider: string) {
     patch("llm", { provider, model: firstModelId("llm", provider) });
   }
+
   function setTtsProvider(provider: string) {
     patch("tts", {
       provider,
       model: firstModelId("tts", provider),
       voice: firstVoiceId(provider),
+    });
+  }
+  /** Changing the TTS model can strand the voice, so move it to a valid one. */
+  function setTtsModel(model: string) {
+    setCfg((c) => {
+      const voice = findVoice(c.tts.provider, c.tts.voice);
+      const stranded =
+        voice?.modelIds != null && !voice.modelIds.includes(model);
+      return {
+        ...c,
+        tts: {
+          ...c.tts,
+          model,
+          voice: stranded ? firstVoiceForModel(c.tts.provider, model) : c.tts.voice,
+        },
+      };
     });
   }
 
@@ -241,7 +305,7 @@ async function save() {
                   <Select value={cfg.stt.provider} onChange={setSttProvider} options={providersFor("stt")} />
                 </Field>
                 <Field label="Model" findings={findingsFor(findings, "stt", "model")}>
-                  <Select value={cfg.stt.model} onChange={(v) => patch("stt", { model: v })} options={sttModels} />
+                  <Select value={cfg.stt.model} onChange={setSttModel} options={sttModels} />
                 </Field>
                 <Field label="Language" findings={findingsFor(findings, "stt", "language")}>
                   <Select
@@ -281,21 +345,21 @@ async function save() {
                     onChange={(v) => patch("llm", { maxTokens: Number(v) })}
                   />
                 </Field>
-                <Field label="Top P">
+                <Field label="Top P" findings={findingsFor(findings, "llm", "topP")}>
                   <TextInput
                     type="number"
                     value={cfg.llm.topP}
                     onChange={(v) => patch("llm", { topP: Number(v) })}
                   />
                 </Field>
-                <Field label="Frequency Penalty">
+                <Field label="Frequency Penalty" findings={findingsFor(findings, "llm", "frequencyPenalty")}>
                   <TextInput
                     type="number"
                     value={cfg.llm.frequencyPenalty}
                     onChange={(v) => patch("llm", { frequencyPenalty: Number(v) })}
                   />
                 </Field>
-                <Field label="Presence Penalty">
+                <Field label="Presence Penalty" findings={findingsFor(findings, "llm", "presencePenalty")}>
                   <TextInput
                     type="number"
                     value={cfg.llm.presencePenalty}
@@ -315,7 +379,7 @@ async function save() {
                   <Select value={cfg.tts.provider} onChange={setTtsProvider} options={providersFor("tts")} />
                 </Field>
                 <Field label="Model" findings={findingsFor(findings, "tts", "model")}>
-                  <Select value={cfg.tts.model} onChange={(v) => patch("tts", { model: v })} options={ttsModels} />
+                  <Select value={cfg.tts.model} onChange={setTtsModel} options={ttsModels} />
                 </Field>
                 <Field label="Voice" findings={findingsFor(findings, "tts", "voice")}>
                   <Select
@@ -354,14 +418,14 @@ async function save() {
                     ]}
                   />
                 </Field>
-                <Field label="Silence Timeout (sec)">
+                <Field label="Silence Timeout (sec)" findings={findingsFor(findings, "general", "silenceTimeout")}>
                   <TextInput
                     type="number"
                     value={cfg.general.silenceTimeout}
                     onChange={(v) => patch("general", { silenceTimeout: Number(v) })}
                   />
                 </Field>
-                <Field label="Max Conversation Duration (min)">
+                <Field label="Max Conversation Duration (min)" findings={findingsFor(findings, "general", "maxDuration")}>
                   <TextInput
                     type="number"
                     value={cfg.general.maxDuration}
@@ -375,11 +439,8 @@ async function save() {
                   <Select
                     value={cfg.general.recordingFormat}
                     onChange={(v) => patch("general", { recordingFormat: v })}
-                    options={[
-                      { value: "webm", label: "WebM (Opus)" },
-                      { value: "mp3", label: "MP3" },
-                      { value: "wav", label: "WAV (PCM)" },
-                    ]}
+                    options={RECORDING_FORMATS}
+                    disabledValues={unusableFormats}
                   />
                 </Field>
               </div>
@@ -426,7 +487,7 @@ async function save() {
                 <Select value={cfg.stt.provider} onChange={setSttProvider} options={providersFor("stt")} />
               </Field>
               <Field label="Model" findings={findingsFor(findings, "stt", "model")}>
-                <Select value={cfg.stt.model} onChange={(v) => patch("stt", { model: v })} options={sttModels} />
+                <Select value={cfg.stt.model} onChange={setSttModel} options={sttModels} />
               </Field>
               <Field label="Language" findings={findingsFor(findings, "stt", "language")}>
                 <Select
@@ -469,14 +530,14 @@ async function save() {
                   onChange={(v) => patch("llm", { maxTokens: Number(v) })}
                 />
               </Field>
-              <Field label="Frequency Penalty">
+              <Field label="Frequency Penalty" findings={findingsFor(findings, "llm", "frequencyPenalty")}>
                 <TextInput
                   type="number"
                   value={cfg.llm.frequencyPenalty}
                   onChange={(v) => patch("llm", { frequencyPenalty: Number(v) })}
                 />
               </Field>
-              <Field label="Presence Penalty">
+              <Field label="Presence Penalty" findings={findingsFor(findings, "llm", "presencePenalty")}>
                 <TextInput
                   type="number"
                   value={cfg.llm.presencePenalty}
@@ -506,7 +567,7 @@ async function save() {
                 <Select value={cfg.tts.provider} onChange={setTtsProvider} options={providersFor("tts")} />
               </Field>
               <Field label="Model" findings={findingsFor(findings, "tts", "model")}>
-                <Select value={cfg.tts.model} onChange={(v) => patch("tts", { model: v })} options={ttsModels} />
+                <Select value={cfg.tts.model} onChange={setTtsModel} options={ttsModels} />
               </Field>
               <Field label="Voice" findings={findingsFor(findings, "tts", "voice")}>
                 <Select
@@ -623,52 +684,6 @@ async function save() {
           </SectionCard>
         )}
 
-        {tab === "Advanced" && (
-          <SectionCard title="Advanced" status={sectionStatus(findings, "advanced")}>
-            <div className="space-y-5">
-              <div>
-                <Toggle
-                  label="Allow Interruptions"
-                  hint="Let the caller barge in while the agent is speaking."
-                  checked={cfg.advanced.interruptionEnabled}
-                  onChange={(v) => patch("advanced", { interruptionEnabled: v })}
-                />
-                {findingsFor(findings, "advanced", "interruptionEnabled").map((f, i) => (
-                  <p
-                    key={`${f.id}-${i}`}
-                    className="mt-2 flex items-start gap-1.5 text-[11px] text-[var(--warning)]"
-                  >
-                    <span aria-hidden="true">⚠</span>
-                    <span>{f.message}</span>
-                  </p>
-                ))}
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Endpointing (ms)">
-                  <TextInput
-                    type="number"
-                    value={cfg.advanced.endpointingMs}
-                    onChange={(v) => patch("advanced", { endpointingMs: Number(v) })}
-                  />
-                </Field>
-                <Field label="Webhook URL">
-                  <TextInput
-                    value={cfg.advanced.webhookUrl}
-                    placeholder="https://example.com/webhook"
-                    onChange={(v) => patch("advanced", { webhookUrl: v })}
-                  />
-                </Field>
-              </div>
-              <Field label="Fallback Message">
-                <textarea
-                  className="field-input min-h-[80px] resize-y"
-                  value={cfg.advanced.fallbackMessage}
-                  onChange={(e) => patch("advanced", { fallbackMessage: e.target.value })}
-                />
-              </Field>
-            </div>
-          </SectionCard>
-        )}
       </div>
     </div>
   );

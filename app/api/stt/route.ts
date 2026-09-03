@@ -7,8 +7,14 @@ import { keyFor } from "../../lib/providers/env";
 
 export const dynamic = "force-dynamic";
 
-/** Guard against oversized uploads; a voice turn is seconds, not minutes. */
-const MAX_BYTES = 25 * 1024 * 1024;
+/**
+ * Guard against oversized uploads; a voice turn is seconds, not minutes.
+ *
+ * Also keeps the Gemini path within the ~20MB inline-request ceiling: audio is
+ * base64-encoded inline, which inflates it by ~4/3, so 12MB of audio stays
+ * comfortably under the limit.
+ */
+const MAX_BYTES = 12 * 1024 * 1024;
 
 async function transcribeGemini(
   audio: File,
@@ -25,61 +31,22 @@ async function transcribeGemini(
   // audio/webm
   const uploadMimeType = audio.type.split(";")[0] || "audio/webm";
 
-  console.log("Gemini STT:", {
-    model,
-    language,
-    audioType: audio.type,
-    uploadMimeType,
-    audioName: audio.name,
-    audioSize: audio.size,
-  });
-
-  // -------------------------------------------------------------------------
-  // 1. Upload audio to Gemini Files API
-  // -------------------------------------------------------------------------
-
-  const uploadRes = await fetch(
-    `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${encodeURIComponent(
-      key,
-    )}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": uploadMimeType,
-        "X-Goog-Upload-Protocol": "raw",
-        "X-Goog-Upload-File-Name": audio.name || "audio.webm",
-      },
-      body: bytes,
-      signal: AbortSignal.timeout(60000),
-    },
-  );
-
-  if (!uploadRes.ok) {
-    const detail = await uploadRes.text().catch(() => "");
-
-    console.error("Gemini file upload error:", detail);
-
-    throw new Error(
-      `Gemini file upload ${uploadRes.status}: ${detail.slice(0, 1000)}`,
-    );
+  if (process.env.NODE_ENV !== "production") {
+    console.log("Gemini STT:", {
+      model,
+      language,
+      audioType: audio.type,
+      uploadMimeType,
+      audioSize: audio.size,
+    });
   }
 
-  const uploaded = await uploadRes.json();
-
-  console.log("Gemini uploaded file:", uploaded);
-
-  const fileUri = uploaded.file?.uri;
-  const mimeType = uploaded.file?.mimeType || uploadMimeType;
-
-  if (!fileUri) {
-    throw new Error(
-      "Gemini file upload succeeded but no file URI was returned.",
-    );
-  }
-
-  // -------------------------------------------------------------------------
-  // 2. Send uploaded audio to Gemini Transcribe
-  // -------------------------------------------------------------------------
+  // Send the audio inline rather than via the Files API. Files exists for
+  // payloads too large for a single request; a voice turn is tens of kilobytes,
+  // well inside the inline limit. Inlining removes an entire WAN round trip
+  // (upload, then generate) from every turn — the bulk of STT latency.
+  //
+  // MAX_BYTES caps uploads below the inline ceiling, so this path always fits.
 
   // For "auto", omit the transcription configuration.
   // Gemini will automatically detect the language.
@@ -89,9 +56,9 @@ async function transcribeGemini(
         role: "user",
         parts: [
           {
-            fileData: {
-              fileUri,
-              mimeType,
+            inlineData: {
+              mimeType: uploadMimeType,
+              data: bytes.toString("base64"),
             },
           },
         ],
@@ -126,10 +93,12 @@ async function transcribeGemini(
     },
   );
 
-  // Read the response once so we can log the exact Gemini response.
+  // Read the response once so the body is available for both logging and parsing.
   const rawResponse = await res.text();
 
-  console.log("Gemini STT response:", rawResponse);
+  if (process.env.NODE_ENV !== "production") {
+    console.log("Gemini STT response:", rawResponse);
+  }
 
   if (!res.ok) {
     throw new Error(
@@ -254,12 +223,9 @@ export async function POST(request: Request) {
     );
   }
 
-  // Sarvam and Smallest reject WebM/Opus outright.
+  // Sarvam rejects WebM/Opus outright.
   // The client should convert these recordings to WAV first.
-  if (
-    (provider === "sarvam" || provider === "smallest") &&
-    audio.type.toLowerCase().includes("webm")
-  ) {
+  if (provider === "sarvam" && audio.type.toLowerCase().includes("webm")) {
     return Response.json(
       {
         error: `${provider} cannot accept WebM audio. Audio conversion to WAV failed in the browser.`,

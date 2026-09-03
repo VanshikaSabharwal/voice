@@ -16,9 +16,29 @@ import {
   findModel,
   findProvider,
   findVoice,
+  modelsSupportingLanguage,
   supportsLanguage,
+  voicesSupportingLanguage,
   type LangCode,
 } from "./capabilities";
+
+/**
+ * "Compatible: X, Y, Z" tail for an error message, so a blocked config always
+ * says what to pick instead. Built from the catalog, never hardcoded.
+ */
+function compatibleModelsHint(
+  modality: "stt" | "llm" | "tts",
+  lang: LangCode,
+): string {
+  const options = modelsSupportingLanguage(modality, lang);
+  if (options.length === 0) return " No model in the catalog supports it.";
+  const listed = options
+    .slice(0, 4)
+    .map((o) => `${o.providerLabel} ${o.model}`)
+    .join(", ");
+  const more = options.length > 4 ? `, +${options.length - 4} more` : "";
+  return ` Compatible: ${listed}${more}.`;
+}
 
 export type Severity = "error" | "warning";
 
@@ -93,7 +113,7 @@ const sttLanguageUnsupported: Rule = (cfg) => {
       severity: "error",
       section: "stt",
       field: "language",
-      message: `${model.label} does not support ${langLabel(cfg.stt.language)}. Choose another model or set language to Auto Detect.`,
+      message: `${model.label} does not support ${langLabel(cfg.stt.language)}. Choose another model or set language to Auto Detect.${compatibleModelsHint("stt", cfg.stt.language)}`,
       fix: {
         label: "Set to Auto Detect",
         patch: { section: "stt", values: { language: "auto" } },
@@ -109,13 +129,16 @@ const agentLanguageSttMismatch: Rule = (cfg) => {
   if (!model || model.languages === null) return [];
   if (supportsLanguage(model.languages, cfg.language)) return [];
 
+  // The catalog says this model does not handle the language at all, so
+  // auto-detect cannot rescue it — the turn would silently mis-transcribe.
+  // That is "cannot work", not "may work", hence an error rather than a warning.
   return [
     {
       id: "agent.language.sttMismatch",
-      severity: "warning",
+      severity: "error",
       section: "stt",
       field: "model",
-      message: `Agent language is ${langLabel(cfg.language)}, but ${model.label} may not transcribe it accurately.`,
+      message: `STT does not support ${langLabel(cfg.language)}. ${model.label} cannot transcribe the agent's language. Choose a different STT model, or change the agent language.${compatibleModelsHint("stt", cfg.language)}`,
     },
   ];
 };
@@ -137,7 +160,7 @@ const ttsModelLanguageUnsupported: Rule = (cfg) => {
       severity: "error",
       section: "tts",
       field: "model",
-      message: `${model.label} cannot speak ${langLabel(cfg.language)}.`,
+      message: `${model.label} cannot speak ${langLabel(cfg.language)}.${compatibleModelsHint("tts", cfg.language)}`,
       ...(alt
         ? {
             fix: {
@@ -222,7 +245,11 @@ const ttsVoiceLanguageMismatch: Rule = (cfg) => {
       severity: "warning",
       section: "tts",
       field: "voice",
-      message: `Voice "${voice.label}" has limited support for ${langLabel(cfg.language)}.`,
+      message: `Voice "${voice.label}" has limited support for ${langLabel(cfg.language)}.${
+        voicesSupportingLanguage(cfg.tts.provider, cfg.tts.model, cfg.language).length
+          ? ` Better suited: ${voicesSupportingLanguage(cfg.tts.provider, cfg.tts.model, cfg.language).slice(0, 4).join(", ")}.`
+          : ""
+      }`,
     },
   ];
 };
@@ -377,7 +404,140 @@ const sttFormatUnsupported: Rule = (cfg) => {
   ];
 };
 
+/**
+ * Numeric fields must be real numbers inside their provider-accepted range.
+ *
+ * Unlike the capability rules, these are absolute: the bounds come from what
+ * the APIs themselves accept, not from the catalog. A blank number input yields
+ * NaN, which JSON serialises to null — so the NaN check is what stops an empty
+ * field being saved as a missing value.
+ */
+type NumericSpec = {
+  value: number;
+  section: Exclude<Section, "agent">;
+  field: string;
+  label: string;
+  min: number;
+  max: number;
+  /** Value offered by the one-click fix when the entry is unusable. */
+  fallback: number;
+  integer?: boolean;
+};
+
+const numericOutOfRange: Rule = (cfg) => {
+  const specs: NumericSpec[] = [
+    { value: cfg.llm.temperature, section: "llm", field: "temperature",
+      label: "Temperature", min: 0, max: 2, fallback: 0.3 },
+    { value: cfg.llm.topP, section: "llm", field: "topP",
+      label: "Top P", min: 0, max: 1, fallback: 1 },
+    { value: cfg.llm.maxTokens, section: "llm", field: "maxTokens",
+      label: "Max Tokens", min: 1, max: 1_000_000, fallback: 2048, integer: true },
+    { value: cfg.llm.frequencyPenalty, section: "llm", field: "frequencyPenalty",
+      label: "Frequency Penalty", min: -2, max: 2, fallback: 0 },
+    { value: cfg.llm.presencePenalty, section: "llm", field: "presencePenalty",
+      label: "Presence Penalty", min: -2, max: 2, fallback: 0 },
+    { value: cfg.tts.stability, section: "tts", field: "stability",
+      label: "Stability", min: 0, max: 1, fallback: 0.5 },
+    { value: cfg.tts.similarityBoost, section: "tts", field: "similarityBoost",
+      label: "Similarity Boost", min: 0, max: 1, fallback: 0.75 },
+    { value: cfg.general.silenceTimeout, section: "general", field: "silenceTimeout",
+      label: "Silence Timeout", min: 0.1, max: 30, fallback: 2 },
+    { value: cfg.general.maxDuration, section: "general", field: "maxDuration",
+      label: "Max Conversation Duration", min: 1, max: 120, fallback: 15, integer: true },
+  ];
+
+  const findings: Finding[] = [];
+
+  for (const s of specs) {
+    // A blank or non-numeric entry is unusable, not merely out of range.
+    if (typeof s.value !== "number" || !Number.isFinite(s.value)) {
+      findings.push({
+        id: "config.number.invalid",
+        severity: "error",
+        section: s.section,
+        field: s.field,
+        message: `${s.label} must be a number.`,
+        fix: {
+          label: `Set to ${s.fallback}`,
+          patch: { section: s.section, values: { [s.field]: s.fallback } },
+        },
+      });
+      continue;
+    }
+
+    if (s.integer && !Number.isInteger(s.value)) {
+      findings.push({
+        id: "config.number.notInteger",
+        severity: "error",
+        section: s.section,
+        field: s.field,
+        message: `${s.label} must be a whole number.`,
+        fix: {
+          label: `Set to ${Math.round(s.value)}`,
+          patch: { section: s.section, values: { [s.field]: Math.round(s.value) } },
+        },
+      });
+      continue;
+    }
+
+    if (s.value < s.min || s.value > s.max) {
+      const clamped = Math.min(s.max, Math.max(s.min, s.value));
+      findings.push({
+        id: "config.number.outOfRange",
+        severity: "error",
+        section: s.section,
+        field: s.field,
+        message: `${s.label} must be between ${s.min} and ${s.max}.`,
+        fix: {
+          label: `Set to ${clamped}`,
+          patch: { section: s.section, values: { [s.field]: clamped } },
+        },
+      });
+    }
+  }
+
+  return findings;
+};
+
+/** A webhook URL, when set, must be a well-formed http(s) address. */
+const webhookUrlInvalid: Rule = (cfg) => {
+  const raw = cfg.advanced.webhookUrl?.trim();
+  if (!raw) return [];
+
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return [
+      {
+        id: "advanced.webhookUrl.invalid",
+        severity: "error",
+        section: "advanced",
+        field: "webhookUrl",
+        message: "Webhook URL is not a valid URL.",
+      },
+    ];
+  }
+
+  // Anything but http(s) — javascript:, data:, file: — is never a webhook.
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return [
+      {
+        id: "advanced.webhookUrl.invalid",
+        severity: "error",
+        section: "advanced",
+        field: "webhookUrl",
+        message: "Webhook URL must start with http:// or https://.",
+      },
+    ];
+  }
+
+  return [];
+};
+
 const RULES: Rule[] = [
+  numericOutOfRange,
+  webhookUrlInvalid,
   sttLanguageUnsupported,
   agentLanguageSttMismatch,
   ttsModelLanguageUnsupported,

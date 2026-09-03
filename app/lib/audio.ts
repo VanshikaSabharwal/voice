@@ -13,7 +13,6 @@ const PROVIDER_FORMATS: Record<string, string[]> = {
   // Inline audio data; broadly tolerant of container types.
   gemini: ["webm", "mp3", "wav", "mp4", "m4a"],
   sarvam: ["wav", "mp3"],
-  smallest: ["wav", "mp3"],
 };
 
 /** True when the recorded blob can be sent to this provider as-is. */

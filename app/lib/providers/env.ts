@@ -14,13 +14,12 @@ const ENV_VAR: Record<string, string> = {
   elevenlabs: "ELEVENLABS_API_KEY",
   cartesia: "CARTESIA_API_KEY",
   sarvam: "SARVAM_API_KEY",
-  smallest: "SMALLEST_API_KEY",
 };
 
 /**
- * Providers with a free health endpoint. Sarvam and Smallest are excluded:
- * checking them would require a billable inference call, so Test Connection
- * reports them as unavailable rather than spending credits.
+ * Providers with a free health endpoint. Sarvam is excluded: checking it would
+ * require a billable inference call, so Test Connection reports it as
+ * unavailable rather than spending credits.
  */
 const PROBEABLE = new Set(["gemini", "elevenlabs", "cartesia"]);
 
