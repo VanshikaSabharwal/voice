@@ -1,36 +1,249 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Voice Agent
 
-## Getting Started
+A telephony voice agent: a continuous phone-style call with real turn-taking
+and interruption, ready to point at Twilio.
 
-First, run the development server:
+The browser page at `/` is a harness standing in for a phone — it speaks the
+same 8 kHz mu-law the carrier will, so what you hear locally is what a real
+call sounds like.
+
+Every layer is swappable — STT, LLM, TTS and tools are chosen in Settings, not
+hardcoded.
+
+---
+
+## Requirements
+
+- **Node 20+** (the engine uses `AbortSignal.any`)
+- API keys for whichever providers you enable
+
+## Install
+
+```bash
+npm install
+cp .env.example .env.local
+```
+
+Fill in `.env.local`. You do **not** need all of them — one per layer is enough:
+
+| Key | Used for | Notes |
+|---|---|---|
+| `GROQ_API_KEY` | LLM | **Recommended.** ~0.6s per call |
+| `GOOGLE_API_KEY` | LLM + STT | Free tier is 25 req/model/day and ~18s with tools |
+| `SARVAM_API_KEY` | STT + TTS | Indic languages |
+| `CARTESIA_API_KEY` | TTS | **Recommended.** ~200ms to first audio |
+| `ELEVENLABS_API_KEY` | TTS | ~310ms to first audio |
+
+A minimal working set: `GROQ_API_KEY` + `CARTESIA_API_KEY` + one STT key.
+
+## Run
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Starts **two processes**:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| | Port | |
+|---|---|---|
+| Next.js | 3000 | UI, settings, API routes |
+| Voice server | 3001 | WebSocket media for calls |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+They are separate because a phone call is a long-lived stateful audio stream,
+which Next route handlers (and Vercel) cannot hold.
 
-## Learn More
+```bash
+npm run dev:next     # UI only
+npm run dev:voice    # voice server only
+```
 
-To learn more about Next.js, take a look at the following resources:
+Then open <http://localhost:3000>.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+---
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Testing
 
-## Deploy on Vercel
+### 1. Audio primitives — no servers, no keys
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+npm run verify:audio
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Checks the mu-law codec against **ITU G.711 reference vectors**, plus framing
+and playback pacing. Run this first if audio ever sounds wrong — it isolates
+the codec from everything else.
+
+### 2. TTS providers — needs keys
+
+```bash
+npm run verify:tts
+```
+
+Confirms each provider emits correctly framed 8 kHz mu-law and reports
+time-to-first-byte.
+
+### 3. A headless call — needs the voice server running
+
+`npm run call` is a robot caller: it synthesizes speech, streams it over the
+same protocol the browser uses, and prints what the agent heard and said. A
+failure here is an engine bug rather than a microphone one, which is what makes
+it worth having.
+
+```bash
+# Fastest path — preset defaults, no env vars needed
+npm run call
+
+# Your own utterance
+npm run call -- "what is the status of S R one two three four"
+
+# Interrupt the agent mid-greeting (barge-in)
+npm run call -- "actually, my billing is wrong" --barge-in
+
+# Hindi end to end
+AGENT_ID=hindi-support STT_PROVIDER=sarvam npm run call -- "मेरा बिल गलत है"
+
+# Compare TTS latency (~310ms vs ~200ms to first audio)
+TTS_PROVIDER=elevenlabs npm run call
+
+# Pin every layer
+LLM_PROVIDER=groq TTS_PROVIDER=cartesia STT_PROVIDER=sarvam npm run call
+```
+
+Two things worth knowing:
+
+- **Say IDs as digits** — "S R one two three four", not "SR1234". TTS reads the
+  latter as "one thousand two hundred thirty-four", which STT then transcribes
+  as words rather than a request ID.
+- **Non-English text picks an Indic voice automatically**, detected from the
+  script. Override with `CALLER_LANG=hi`. Without this the caller's own voice
+  mispronounces Devanagari and a healthy agent looks broken.
+
+### 4. A real call — your voice
+
+<http://localhost:3000> → **Call**.
+
+The agent greets you, then listens. Try talking over it to feel barge-in.
+
+The **VAD meter** is the thing to watch: the bar is your voice level, the line
+is the detection threshold. If speech never crosses the line, that is why the
+agent is not hearing you — and it is nearly always the cause.
+
+Live sliders during a call: endpointing, barge-in on/off, echo cancellation.
+
+Past calls with transcripts and per-stage timings: <http://localhost:3000/conversations>
+
+---
+
+## Configuration
+
+Four ways, highest precedence first:
+
+**1. Env overrides** — per test run, no files touched:
+
+| Variable | Values |
+|---|---|
+| `STT_PROVIDER` | `sarvam` · `gemini` |
+| `LLM_PROVIDER` | `groq` |
+| `TTS_PROVIDER` | `cartesia` · `elevenlabs` |
+| `AGENT_ID` | `customer-support` · `hindi-support` · `default-agent` |
+
+Unrecognized values fall through silently to the config. These replace the
+model as well as the provider, and the list is deliberately short — it is a
+debugging affordance, not a config system.
+
+**2. Saved configs** — <http://localhost:3000/settings>, written to
+`.data/configs.json`.
+
+**3. Presets** — [`app/lib/presets.ts`](app/lib/presets.ts), shipped in code and
+read-only. `customer-support` is tuned for telephony (Groq + Cartesia).
+
+**4. `DEFAULT_CONFIG`** — [`app/lib/types.ts`](app/lib/types.ts).
+
+Presets ship in code; saved configs do not. A saved config will keep using
+whatever providers it was saved with.
+
+### Fields that matter for calls
+
+Under Settings → General / Advanced. These had no effect until the telephony
+engine existed:
+
+| Field | Effect |
+|---|---|
+| `advanced.endpointingMs` | Silence that ends a turn. **The main latency knob.** |
+| `general.silenceTimeout` | Nothing said at all → re-prompt |
+| `advanced.interruptionEnabled` | Barge-in on/off |
+| `general.maxDuration` | Hard cap on one utterance |
+| `general.vad` | `"enabled"`, or a fixed window for debugging |
+
+---
+
+## How it works
+
+Both call directions are one engine — they differ only in who opened the
+socket:
+
+```
+outbound intent ─┐
+                 ├─▶ CallSession ─▶ MediaTransport ─▶ browser / Twilio
+inbound connect ─┘   VAD → STT → LLM → TTS
+```
+
+States: `greeting → listening → capturing → thinking → speaking → …`
+
+Everything on the wire is **8 kHz mono mu-law in 20 ms frames** — what the
+phone network actually carries. The browser harness speaks it too, so the
+narrowband quality hit shows up immediately rather than on Twilio day.
+
+Both ElevenLabs and Cartesia emit mu-law directly, so there is **no ffmpeg and
+no audio decoding** anywhere.
+
+### Measured latency
+
+Sarvam STT + Groq + Cartesia, one turn including a tool call:
+
+| Stage | |
+|---|---|
+| STT | ~520 ms |
+| LLM | ~1400 ms |
+| TTS (first audio) | ~200 ms |
+| **Total** | **~2.1 s** |
+
+---
+
+## Layout
+
+```
+app/                    Next.js UI and API routes
+  page.tsx              The call harness (VAD meter, live tuning)
+  conversations/        Call history and transcripts
+  settings/             Provider configuration
+lib/                    Shared, framework-free (Node + browser)
+  audio/                mu-law codec, framing, VAD
+  call/                 CallSession, MediaTransport, registry
+  agent/                STT, LLM, TTS
+voice-server/           Standalone WebSocket media server
+  TELEPHONY.md          Architecture + Twilio integration guide
+scripts/                Verification and the headless caller
+```
+
+## Adding Twilio
+
+Not wired up yet — see
+[`voice-server/TELEPHONY.md`](voice-server/TELEPHONY.md). The engine already
+speaks Twilio's wire format, so it is one new `MediaTransport` plus a TwiML
+route; nothing under `lib/call/session.ts`, `lib/audio/` or `lib/agent/` should
+need to change.
+
+Note for Indian numbers: outbound to Indian mobiles requires DLT/TRAI
+registration, which takes days to weeks. Worth starting before you need it.
+
+## Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| `ECONNREFUSED 127.0.0.1:3001` | Voice server not running — `npm run dev` |
+| Call hangs at "thinking" | Slow or rate-limited LLM. Try `LLM_PROVIDER=groq` |
+| `429 RESOURCE_EXHAUSTED` | Gemini free tier (25 req/model/day) |
+| Agent does not hear you | Watch the VAD meter — speech must cross the threshold line |
+| Agent interrupts itself | Turn echo cancellation on, or use headphones |
+| Turn ends mid-sentence | Raise `endpointingMs` |

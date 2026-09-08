@@ -4,8 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-  BotIcon, ChatIcon, ChartIcon, BookIcon, ToolIcon,
-  SettingsIcon, LogsIcon, WaveIcon, CloseIcon, PlusIcon,
+  ChatIcon, SettingsIcon, WaveIcon, CloseIcon, PlusIcon,
 } from "./Icons";
 import { useConfig } from "../lib/ConfigContext";
 import { useConnection } from "../lib/ConnectionContext";
@@ -13,13 +12,9 @@ import { PRESETS, type SavedConfig } from "../lib/presets";
 import { DEFAULT_CONFIG } from "../lib/types";
 
 const NAV = [
-  { href: "/", label: "Voice Bot", Icon: BotIcon },
-  // { href: "/conversations", label: "Conversations", Icon: ChatIcon },
-  // { href: "/analytics", label: "Analytics", Icon: ChartIcon },
-  // { href: "/knowledge-base", label: "Knowledge Base", Icon: BookIcon },
-  // { href: "/tools", label: "Tools", Icon: ToolIcon },
+  { href: "/", label: "Call", Icon: WaveIcon },
+  { href: "/conversations", label: "Conversations", Icon: ChatIcon },
   { href: "/settings", label: "Settings", Icon: SettingsIcon },
-  // { href: "/logs", label: "Logs", Icon: LogsIcon },
 ] as const;
 
 /** Saved configurations, connection status, and the Test Connection action. */

@@ -34,7 +34,46 @@ export type ModelCapability = {
   maxOutputTokens: number | null;
   /** Supports incremental/streaming output. null = unknown. */
   streaming: boolean | null;
+  /**
+   * TTS only: wire formats the model can emit directly, e.g. "ulaw_8000".
+   *
+   * Telephony carries 8 kHz mu-law, so a model that can emit it needs no
+   * decoding or resampling at all — which is the difference between a TTS
+   * path with no audio dependencies and one that needs ffmpeg. null = unknown,
+   * which per this file's convention must never produce a validation finding.
+   */
+  outputFormats?: string[] | null;
 };
+
+/**
+ * TTS output formats, by provider.
+ *
+ * Kept at provider level rather than per model because the encoder is a
+ * property of the API, not of the voice model behind it. Values are verified
+ * against the live APIs by scripts/verify-tts.ts rather than taken from docs.
+ */
+export const TTS_OUTPUT_FORMATS: Record<string, string[]> = {
+  // Verified: ?output_format=ulaw_8000 returns mu-law bytes directly.
+  elevenlabs: ["ulaw_8000", "pcm_16000", "mp3"],
+  // Verified: {container:"raw", encoding:"pcm_mulaw", sample_rate:8000}.
+  cartesia: ["ulaw_8000", "pcm_16000", "mp3"],
+  // WAV only at a fixed rate, so telephony needs a resample on this path.
+  sarvam: ["wav"],
+};
+
+/**
+ * Can this provider emit telephony audio without a decode/resample step?
+ *
+ * Unknown providers return true: per this file's convention, absent capability
+ * data means "unknown", which must never be reported as a problem.
+ */
+export function emitsTelephonyAudio(provider: string): boolean {
+  const formats = TTS_OUTPUT_FORMATS[provider];
+
+  if (!formats) return true;
+
+  return formats.includes("ulaw_8000");
+}
 
 export type VoiceCapability = {
   id: string;

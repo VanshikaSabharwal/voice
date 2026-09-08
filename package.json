@@ -3,24 +3,34 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "concurrently -n next,voice -c cyan,magenta \"next dev\" \"npm:dev:voice\"",
+    "dev:next": "next dev",
+    "dev:voice": "tsx watch voice-server/index.ts",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "start:voice": "NODE_ENV=production tsx voice-server/index.ts",
+    "lint": "eslint",
+    "verify:audio": "tsx scripts/verify-audio.ts",
+    "verify:tts": "tsx scripts/verify-tts.ts",
+    "call": "tsx scripts/fake-caller.ts"
   },
   "dependencies": {
     "next": "16.3.4",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/ws": "^8.18.1",
+    "concurrently": "^9.2.4",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
     "tailwindcss": "^4",
+    "tsx": "^4.23.13",
     "typescript": "^5"
   }
 }
