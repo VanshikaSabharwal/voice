@@ -11,15 +11,21 @@
  *    same moment would otherwise read-modify-write over each other and lose a
  *    transcript.
  *
- * This lives on the voice server, which has a real filesystem; Vercel's is
- * read-only, which is why the Next route proxies here rather than storing
- * anything itself.
+ * Persists to MongoDB when MONGODB_URL is set, else to .data/calls.json. The
+ * database matters here because a deployed container's filesystem is
+ * ephemeral: without it, every redeploy silently discards the call history the
+ * conversations page reads.
+ *
+ * The debouncing and write serialisation above are unchanged by that switch —
+ * only the sink differs, so a Mongo round trip still never happens on the
+ * per-frame path.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { TurnRecord } from "../call/session";
 import type { CallDirection, TransportKind } from "../call/transport";
+import { COLLECTIONS, tryGetDb } from "../db/mongo";
 
 export type CallRecord = {
   id: string;
@@ -51,6 +57,22 @@ let flushTimer: ReturnType<typeof setTimeout> | null = null;
 async function load(): Promise<CallRecord[]> {
   if (cache) return cache;
 
+  const db = await tryGetDb();
+
+  if (db) {
+    try {
+      cache = await db
+        .collection<CallRecord>(COLLECTIONS.calls)
+        .find({}, { projection: { _id: 0 } })
+        .sort({ startedAt: -1 })
+        .limit(MAX_RECORDS)
+        .toArray();
+      return cache;
+    } catch (err) {
+      console.error("[calls] mongo read failed:", err);
+    }
+  }
+
   try {
     const raw = await readFile(DATA_FILE, "utf8");
     const parsed = JSON.parse(raw);
@@ -67,6 +89,29 @@ async function load(): Promise<CallRecord[]> {
 function enqueueWrite(): void {
   writeChain = writeChain.then(async () => {
     const records = await load();
+    const db = await tryGetDb();
+
+    if (db) {
+      try {
+        /* Upsert only the calls held in memory. Rewriting all 200 records on
+           every flush would turn a debounced local write into a large network
+           round trip, which is the opposite of what the debounce is for. */
+        const dirty = records.filter((r) => active.has(r.id) || r.endedAt);
+
+        if (dirty.length > 0) {
+          await db.collection<CallRecord>(COLLECTIONS.calls).bulkWrite(
+            dirty.map((r) => ({
+              replaceOne: { filter: { id: r.id }, replacement: r, upsert: true },
+            })),
+            { ordered: false },
+          );
+        }
+        return;
+      } catch (err) {
+        console.error("[calls] mongo write failed:", err);
+        // Fall through to the file store rather than losing the transcript.
+      }
+    }
 
     try {
       await mkdir(DATA_DIR, { recursive: true });

@@ -34,6 +34,12 @@ services:
       # PORT is injected by Render and read first (voice-server/index.ts:31).
       # Do not set it here.
 
+      # Persistence. Without this the container's filesystem is used, which is
+      # ephemeral — saved configs and call history vanish on every deploy, and
+      # the voice server falls back to DEFAULT_CONFIG.
+      - key: MONGODB_URL
+        sync: false
+
       # Provider keys. sync:false = set by hand in the dashboard, never in git.
       - key: GOOGLE_API_KEY
         sync: false
@@ -56,8 +62,7 @@ services:
 #    seconds, which a caller experiences as a dead line. Use a paid instance
 #    for anything real.
 #
-# 2. Call history (.data/calls.json, lib/store/calls.ts:39-40) is written to
-#    the container's ephemeral disk and is LOST on every deploy and restart.
-#    Configs and vectors are rebuilt at build time so they are fine; call
-#    history is not. Attach a Render Disk mounted at /opt/render/project/src/.data
-#    if you need it to survive, or move the store to a database.
+# 2. Set MONGODB_URL. Configs and call history fall back to the container's
+#    ephemeral disk without it, which means Settings appears to save and then
+#    loses the edit on the next deploy. RAG vectors are fine either way — they
+#    are rebuilt by `npm run ingest` in the build command above.
