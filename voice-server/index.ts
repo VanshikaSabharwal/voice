@@ -243,6 +243,7 @@ async function handleCall(ws: WebSocket, url: URL): Promise<void> {
           toolsUsed: turn.toolsUsed,
           sttMs: turn.sttMs,
           llmMs: turn.llmMs,
+          toolMs: turn.toolMs,
           ttsMs: turn.ttsMs,
         });
       },

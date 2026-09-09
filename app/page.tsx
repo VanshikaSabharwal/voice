@@ -13,9 +13,14 @@
  * the level against the threshold you are guessing.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useConfig } from "./lib/ConfigContext";
 import { decodeMulaw, encodeMulaw, FRAME_BYTES } from "./lib/mulaw-client";
+import {
+  callStats,
+  DROPPED_CALL_MS,
+  type StageStats,
+} from "../lib/call/stats";
 
 type CallState =
   | "idle"
@@ -33,8 +38,99 @@ type Entry = {
   toolsUsed?: string[];
   sttMs?: number;
   llmMs?: number;
+  toolMs?: number;
   ttsMs?: number;
 };
+
+/**
+ * How the call just went, in the terms that decide whether it felt like a
+ * conversation.
+ *
+ * The verdict is keyed off p95 rather than the median: one long pause is what
+ * a caller remembers, and a call can average well while still stalling twice
+ * for long enough that someone wonders whether the line is dead.
+ */
+function CallSummary({ entries }: { entries: Entry[] }) {
+  const stats = useMemo(
+    () =>
+      callStats(
+        entries.filter(
+          (e): e is Entry & { role: "user" | "assistant" } => e.role !== "system",
+        ),
+      ),
+    [entries],
+  );
+
+  if (stats.turns === 0) return null;
+
+  const rows: Array<[string, StageStats | undefined]> = [
+    ["STT", stats.stt],
+    ["LLM", stats.llm],
+    ["Tools", stats.tool],
+    ["TTS", stats.tts],
+    ["Turn", stats.turnTotal],
+  ];
+
+  const p95 = stats.turnTotal?.p95 ?? 0;
+
+  const verdict =
+    p95 < 1000
+      ? { text: "Conversational", tone: "text-[var(--success)]" }
+      : p95 < DROPPED_CALL_MS
+        ? { text: "Acceptable", tone: "text-[var(--text-muted)]" }
+        : { text: "Too slow — callers notice pauses this long", tone: "text-[var(--warning)]" };
+
+  return (
+    <section className="rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2.5">
+      <div className="mb-2 flex items-baseline justify-between gap-2">
+        <span className="text-[11px] font-medium">
+          Call latency · {stats.turns} turn{stats.turns === 1 ? "" : "s"}
+        </span>
+        <span className={`text-[10px] ${verdict.tone}`}>{verdict.text}</span>
+      </div>
+
+      <table className="w-full text-[10px] tabular-nums">
+        <thead>
+          <tr className="text-[var(--text-subtle)]">
+            <th className="w-12 text-left font-normal" />
+            <th className="text-right font-normal">median</th>
+            <th className="text-right font-normal">p95</th>
+            <th className="text-right font-normal">range</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([label, s]) =>
+            s ? (
+              <tr key={label} className={label === "Turn" ? "font-medium" : undefined}>
+                <td className="text-left text-[var(--text-muted)]">{label}</td>
+                <td className="text-right">{s.median}ms</td>
+                <td
+                  className={`text-right ${
+                    label === "Turn" && s.p95 >= DROPPED_CALL_MS
+                      ? "text-[var(--warning)]"
+                      : ""
+                  }`}
+                >
+                  {s.p95}ms
+                </td>
+                <td className="text-right text-[var(--text-subtle)]">
+                  {s.min}–{s.max}
+                </td>
+              </tr>
+            ) : null,
+          )}
+        </tbody>
+      </table>
+
+      {stats.slowTurns > 0 && (
+        <p className="mt-1.5 text-[10px] text-[var(--text-subtle)]">
+          {stats.slowTurns} of {stats.turns} turn
+          {stats.turns === 1 ? "" : "s"} took over {DROPPED_CALL_MS / 1000}s.
+        </p>
+      )}
+    </section>
+  );
+}
 
 const STATE_LABEL: Record<CallState, string> = {
   idle: "Not connected",
@@ -208,6 +304,7 @@ export default function CallTestPage() {
               toolsUsed: msg.toolsUsed,
               sttMs: msg.sttMs,
               llmMs: msg.llmMs,
+              toolMs: msg.toolMs,
               ttsMs: msg.ttsMs,
             },
           ]);
@@ -378,6 +475,10 @@ export default function CallTestPage() {
               />
             </label>
           </section>
+
+          {/* Shown once the call is over, so the latency the caller just
+              experienced is visible without going to the server log. */}
+          {state === "ended" && <CallSummary entries={entries} />}
 
           <section className="space-y-2">
             {entries.length === 0 && (

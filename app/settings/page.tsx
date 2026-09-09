@@ -18,7 +18,7 @@ import { useConfig } from "../lib/ConfigContext";
 import { PRESETS } from "../lib/presets";
 import { Field, Select, TextInput, Slider, SectionCard } from "../components/Fields";
 import ValidationStatus from "../components/ValidationStatus";
-import { SaveIcon, MicIcon, SparkIcon, WaveIcon, ToolIcon, PlusIcon, TrashIcon } from "../components/Icons";
+import { SaveIcon, MicIcon, SparkIcon, WaveIcon, ToolIcon, TrashIcon } from "../components/Icons";
 
 const TABS = ["General", "Agent", "STT", "LLM", "TTS", "Tools"] as const;
 type Tab = (typeof TABS)[number];
@@ -763,27 +763,21 @@ async function save() {
                 </div>
               ))}
             </div>
-            <button
-              onClick={() =>
-                setCfg({
-                  ...cfg,
-                  tools: [
-                    ...cfg.tools,
-                    {
-                      id: `tool_${Date.now()}`,
-                      name: "new_tool",
-                      description: "Describe what this tool does.",
-                      enabled: false,
-                      params: "{ }",
-                    },
-                  ],
-                })
-              }
-              className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--border-strong)] px-3 py-2.5 text-xs font-medium text-[var(--text-muted)] transition hover:border-[var(--brand)] hover:text-[var(--brand)]"
-            >
-              <PlusIcon className="h-4 w-4" />
-              Add Tool
-            </button>
+            {/* A tool needs a JSON schema the model can read AND a function to
+                run, and only the first of those can be expressed here. The
+                button that used to sit in this spot appended a config entry
+                that enabledTools() then filtered out for having no schema — so
+                it looked like it worked and silently did nothing. Naming where
+                the work actually happens is more use than a dead control. */}
+            <p className="mt-4 rounded-lg border border-dashed border-[var(--border-strong)] px-3 py-2.5 text-center text-[11px] text-[var(--text-subtle)]">
+              Tools are defined in code. Add one in{" "}
+              <code className="font-mono text-[var(--text-muted)]">
+                app/lib/tools.ts
+              </code>{" "}
+              — a schema in <code className="font-mono">TOOL_SCHEMAS</code> and a
+              function in <code className="font-mono">IMPLEMENTATIONS</code> —
+              and it appears here.
+            </p>
           </SectionCard>
         )}
 
