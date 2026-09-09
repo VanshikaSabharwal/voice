@@ -7,15 +7,18 @@
  * decoder, no Web Audio (which does not exist in Node anyway). Provider bytes
  * are chopped into 160-byte frames and handed to the transport verbatim.
  *
- * Sarvam is the exception. It only returns WAV at its own rate, so that path
- * parses and resamples — the sole place in the engine that touches DSP for
- * output audio.
+ * Sarvam and Gemini are the exceptions, and are where the engine's only output
+ * DSP lives: Sarvam returns WAV at its own rate, Gemini headerless PCM16 at
+ * 24 kHz, so both parse and resample down to 8 kHz.
  *
  * Everything yields through an async iterator so playback can begin before
- * generation finishes, and so an interruption can stop it mid-sentence.
+ * generation finishes, and so an interruption can stop it mid-sentence. Note
+ * that the two resampling providers are single-shot APIs: they yield one blob
+ * at the end rather than streaming, so an interruption can still cut playback
+ * short but cannot save the generation cost the way it does on the others.
  */
 
-import { keyFor } from "../../app/lib/providers/env";
+import { envVarFor, keyFor } from "../../app/lib/providers/env";
 import type { AgentConfig } from "../../app/lib/types";
 import { encodeMulaw, SAMPLE_RATE } from "../audio/mulaw";
 import { parseWav, resampleLinear } from "../audio/resample";
@@ -195,6 +198,133 @@ async function* sarvam(
 }
 
 // ---------------------------------------------------------------------------
+// Bodhan — OpenAI-shaped endpoint returning WAV, so it resamples too.
+// ---------------------------------------------------------------------------
+
+async function* bodhan(
+  cfg: AgentConfig,
+  text: string,
+  key: string,
+  signal: AbortSignal,
+): AsyncGenerator<Uint8Array> {
+  const res = await fetch("https://api.bodhan.ai/v1/audio/speech", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    cache: "no-store",
+    signal: withDeadline(signal, TTS_TIMEOUT_MS),
+    body: JSON.stringify({
+      model: cfg.tts.model,
+      input: text,
+      voice: cfg.tts.voice,
+      // Bodhan takes the language as a JSON *string*, not a nested object, and
+      // wants a bare two-letter code — so "en-IN" must be trimmed to "en".
+      instructions: JSON.stringify({ lang: langOf(cfg) }),
+    }),
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+
+    // Mirror of the STT path: a key scoped to the transcription model cannot
+    // synthesize, and the raw message does not say which variable to set.
+    if (res.status === 403 && detail.includes("key_model_access_denied")) {
+      throw new Error(
+        `Bodhan TTS 403: this key is not permitted to use ${cfg.tts.model}. ` +
+          "Bodhan issues one key per model — create a key for the speech model " +
+          "and set BODHAN_TTS_API_KEY.",
+      );
+    }
+
+    throw new Error(`Bodhan TTS ${res.status}: ${detail.slice(0, 200)}`);
+  }
+
+  // Returns audio/wav (PCM16 24 kHz mono) as raw bytes, not base64 JSON.
+  const { pcm, sampleRate } = parseWav(Buffer.from(await res.arrayBuffer()));
+
+  yield encodeMulaw(resampleLinear(pcm, sampleRate, SAMPLE_RATE));
+}
+
+// ---------------------------------------------------------------------------
+// Gemini — raw PCM16 at its own rate, so this path resamples like Sarvam's.
+// ---------------------------------------------------------------------------
+
+/** Default when a response omits the rate; every model observed emits 24 kHz. */
+const GEMINI_DEFAULT_RATE = 24000;
+
+/**
+ * Pull the sample rate out of an L16 mime type.
+ *
+ * The models are not consistent about how they spell it — one returns
+ * "audio/l16; rate=24000; channels=1" and another "audio/L16;codec=pcm;rate=24000"
+ * — so this matches case-insensitively on the rate parameter rather than
+ * assuming a fixed string or a fixed rate.
+ */
+function pcmRateOf(mimeType: string | undefined): number {
+  const match = /rate=(\d+)/i.exec(mimeType ?? "");
+  return match ? Number(match[1]) : GEMINI_DEFAULT_RATE;
+}
+
+async function* gemini(
+  cfg: AgentConfig,
+  text: string,
+  key: string,
+  signal: AbortSignal,
+): AsyncGenerator<Uint8Array> {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      cfg.tts.model,
+    )}:generateContent`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      cache: "no-store",
+      signal: withDeadline(signal, TTS_TIMEOUT_MS),
+      body: JSON.stringify({
+        contents: [{ parts: [{ text }] }],
+        generationConfig: {
+          responseModalities: ["AUDIO"],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: cfg.tts.voice },
+            },
+          },
+        },
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Gemini TTS ${res.status}: ${detail.slice(0, 200)}`);
+  }
+
+  const data: {
+    candidates?: {
+      content?: { parts?: { inlineData?: { mimeType?: string; data?: string } }[] };
+    }[];
+  } = await res.json();
+
+  const audio = data.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data)
+    ?.inlineData;
+
+  if (!audio?.data) throw new Error("Gemini returned no audio.");
+
+  // Headerless PCM16 little-endian — there is no WAV container to parse, so
+  // the bytes are reinterpreted as samples directly.
+  const bytes = Buffer.from(audio.data, "base64");
+  const pcm = new Int16Array(bytes.length >> 1);
+
+  for (let i = 0; i < pcm.length; i++) {
+    pcm[i] = bytes.readInt16LE(i * 2);
+  }
+
+  yield encodeMulaw(resampleLinear(pcm, pcmRateOf(audio.mimeType), SAMPLE_RATE));
+}
+
+// ---------------------------------------------------------------------------
 
 /**
  * Speak `text`, yielding 160-byte mu-law frames.
@@ -208,10 +338,12 @@ export function speak(
   signal: AbortSignal,
 ): TtsStream {
   const provider = cfg.tts.provider;
-  const key = keyFor(provider);
+  const key = keyFor(provider, "tts");
 
   if (!key) {
-    throw new Error(`No API key configured for ${provider}.`);
+    throw new Error(
+      `No API key configured for ${provider}. Set ${envVarFor(provider, "tts")}.`,
+    );
   }
 
   const source =
@@ -219,10 +351,20 @@ export function speak(
       ? cartesia(cfg, text, key, signal)
       : provider === "sarvam"
         ? sarvam(cfg, text, key, signal)
-        : elevenLabs(cfg, text, key, signal);
+        : provider === "gemini"
+          ? gemini(cfg, text, key, signal)
+          : provider === "bodhan"
+            ? bodhan(cfg, text, key, signal)
+            : elevenLabs(cfg, text, key, signal);
 
   return frameStream(source);
 }
 
 /** Providers able to produce telephony audio at all. */
-export const TELEPHONY_TTS_PROVIDERS = new Set(["elevenlabs", "cartesia", "sarvam"]);
+export const TELEPHONY_TTS_PROVIDERS = new Set([
+  "elevenlabs",
+  "cartesia",
+  "sarvam",
+  "gemini",
+  "bodhan",
+]);

@@ -29,12 +29,16 @@ Fill in `.env.local`. You do **not** need all of them — one per layer is enoug
 | Key | Used for | Notes |
 |---|---|---|
 | `GROQ_API_KEY` | LLM | **Recommended.** ~0.6s per call |
-| `GOOGLE_API_KEY` | LLM + STT | Free tier is 25 req/model/day and ~18s with tools |
-| `SARVAM_API_KEY` | STT + TTS | Indic languages |
-| `CARTESIA_API_KEY` | TTS | **Recommended.** ~200ms to first audio |
+| `GOOGLE_API_KEY` | LLM + STT + embeddings | Also powers RAG. Slow with tools (~18s) |
+| `SARVAM_API_KEY` | STT + TTS | Indic. Fastest STT measured here (~375ms) |
+| `CARTESIA_API_KEY` | TTS | **Recommended.** ~180ms to first audio |
 | `ELEVENLABS_API_KEY` | TTS | ~310ms to first audio |
+| `BODHAN_API_KEY` | STT + TTS | 27 Indian languages incl. Bhojpuri, Bhili |
 
 A minimal working set: `GROQ_API_KEY` + `CARTESIA_API_KEY` + one STT key.
+`GOOGLE_API_KEY` is additionally required for RAG, which embeds through Gemini.
+
+Measure any combination with `npm run verify:latency`.
 
 ## Run
 

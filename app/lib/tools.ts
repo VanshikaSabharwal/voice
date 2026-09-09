@@ -127,6 +127,25 @@ export const TOOL_SCHEMAS: Record<
       required: ["customer_id", "issue"],
     },
   },
+  search_policies: {
+    description:
+      "Search company policy documents to answer a question about rules, terms, " +
+      "eligibility, timeframes, fees or procedures — refunds, returns, warranties, " +
+      "cancellations, privacy, shipping and the like. Use this whenever the caller " +
+      "asks what the policy is rather than about their own account, and answer only " +
+      "from what it returns. Never guess at a policy.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description:
+            "The caller's question, in full. Prefer their own words over keywords.",
+        },
+      },
+      required: ["query"],
+    },
+  },
 };
 
 function getCustomer(args: Record<string, unknown>): ToolResult {
@@ -209,21 +228,70 @@ function createServiceRequest(args: Record<string, unknown>): ToolResult {
   return { created: true, request };
 }
 
-const IMPLEMENTATIONS: Record<string, (a: Record<string, unknown>) => ToolResult> = {
+/**
+ * Answer a policy question from the ingested documents.
+ *
+ * Imported lazily so the mock tools stay usable with no vector store present,
+ * and so a browser bundle that imports this module never pulls in node:fs.
+ */
+async function searchPolicies(args: Record<string, unknown>): Promise<ToolResult> {
+  const query = typeof args.query === "string" ? args.query.trim() : "";
+
+  if (!query) return { error: "A `query` is required." };
+
+  const { embed } = await import("../../lib/rag/embed");
+  const { search, isReady } = await import("../../lib/rag/store");
+
+  if (!(await isReady())) {
+    return {
+      error: "No policy documents have been ingested yet.",
+      hint: "Run `npm run ingest` to build the store.",
+    };
+  }
+
+  const hits = await search(await embed(query, "RETRIEVAL_QUERY"), 3);
+
+  // An empty result is a real answer, not a failure: it tells the model the
+  // documents do not cover this, which is what should be said out loud rather
+  // than having it fill the silence with a guess.
+  if (hits.length === 0) {
+    return { found: false, note: "No policy document covers this question." };
+  }
+
+  return {
+    found: true,
+    excerpts: hits.map((h) => ({
+      source: h.source,
+      section: h.heading,
+      text: h.text,
+    })),
+  };
+}
+
+const IMPLEMENTATIONS: Record<
+  string,
+  (a: Record<string, unknown>) => ToolResult | Promise<ToolResult>
+> = {
   get_customer: getCustomer,
   get_service_request: getServiceRequest,
   create_service_request: createServiceRequest,
+  search_policies: searchPolicies,
 };
 
-/** Run a tool by name. Unknown names return an error object, never throw. */
-export function executeTool(
+/**
+ * Run a tool by name. Unknown names return an error object, never throw.
+ *
+ * Async because retrieval tools make network calls; the synchronous mock
+ * implementations are simply awaited without effect.
+ */
+export async function executeTool(
   name: string,
   args: Record<string, unknown>,
-): ToolResult {
+): Promise<ToolResult> {
   const impl = IMPLEMENTATIONS[name];
   if (!impl) return { error: `Unknown tool: ${name}` };
   try {
-    return impl(args);
+    return await impl(args);
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Tool failed." };
   }

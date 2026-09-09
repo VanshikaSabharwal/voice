@@ -26,11 +26,29 @@ export type VadParams = {
   minThreshold: number;
 };
 
+/*
+ * Tuned against fluctuating room noise rather than a steady tone.
+ *
+ * The distinction matters: a constant hiss trains the noise floor and never
+ * false-triggers, so steady-noise testing says any threshold is fine. Real air
+ * noise gusts — an AC compressor cycling, a fan sweeping, distant traffic —
+ * and it is the gusts that cross the bar. Measured over 30 s of gusting noise,
+ * the previous values (minThreshold 0.012, ratio 3.0, onset 3) produced 9-15
+ * false onsets; these produce none while still catching real speech.
+ *
+ * Each false onset is not merely cosmetic: it opens a capture and spends an
+ * STT request, which is how a quiet room ends up with the agent answering
+ * things nobody said.
+ */
 export const DEFAULT_VAD_PARAMS: VadParams = {
-  onsetFrames: 3,
+  // 6 frames = 120 ms of sustained energy. A gust rarely holds that; a
+  // syllable easily does.
+  onsetFrames: 6,
   endpointFrames: 25,
-  thresholdRatio: 3.0,
-  minThreshold: 0.012,
+  thresholdRatio: 4.0,
+  // Speech into a phone sits ~0.08-0.25 RMS, so an absolute floor of 0.03
+  // stays well clear of the quietest speech while rejecting room tone.
+  minThreshold: 0.03,
 };
 
 export type VadEvent =
@@ -67,6 +85,16 @@ export class Vad {
       this.noiseFloor * this.params.thresholdRatio,
       this.params.minThreshold,
     );
+  }
+
+  /**
+   * The learned noise floor itself, NOT the speech threshold.
+   *
+   * BargeInDetector applies its own ratio, so it needs the raw floor — handing
+   * it `threshold` would apply a ratio twice and leave barge-in ~3x too deaf.
+   */
+  get floor(): number {
+    return this.noiseFloor;
   }
 
   /**
@@ -133,10 +161,32 @@ export class Vad {
 export class BargeInDetector {
   private run = 0;
 
+  /*
+   * Tuned against the corrected units. The call site previously passed the
+   * VAD's already-scaled threshold instead of the noise floor, which applied
+   * the ratio twice and left the effective trigger 2-3x higher than these
+   * numbers suggest; the values below are what that accidentally produced,
+   * made explicit.
+   *
+   * Erring deaf is deliberate. A missed barge-in costs the caller one repeat;
+   * a false one cuts the agent off mid-sentence for a passing truck, which is
+   * the failure people actually notice. 6 frames = 120 ms of sustained energy,
+   * which room noise rarely holds but a voice trivially does.
+   */
   constructor(
-    private readonly frames: number = 3,
-    private readonly ratio: number = 3.5,
-    private readonly minThreshold: number = 0.02,
+    private readonly frames: number = 6,
+    private readonly ratio: number = 8.0,
+    private readonly minThreshold: number = 0.045,
+    /**
+     * Ceiling on the adaptive threshold.
+     *
+     * Without it a noisy line raises the floor until nothing can clear the bar
+     * and the caller becomes unable to interrupt at all — the failure mode is
+     * silent, and worse than an occasional false trigger. Speech into a phone
+     * sits around 0.08-0.25 RMS, so capping here keeps barge-in reachable
+     * however loud the room gets.
+     */
+    private readonly maxThreshold: number = 0.09,
   ) {}
 
   /**
@@ -144,7 +194,10 @@ export class BargeInDetector {
    * @returns true when the caller is talking over the agent
    */
   push(pcm: Int16Array, noiseFloor: number): boolean {
-    const threshold = Math.max(noiseFloor * this.ratio, this.minThreshold);
+    const threshold = Math.min(
+      Math.max(noiseFloor * this.ratio, this.minThreshold),
+      this.maxThreshold,
+    );
 
     if (rms(pcm) > threshold) {
       this.run++;

@@ -43,5 +43,10 @@ async function run(provider: string, model: string, voice: string) {
   console.log("\nTTS -> 8kHz mu-law frames\n");
   await run("elevenlabs", "eleven_flash_v2_5", "Sarah");
   await run("cartesia", "sonic-2", "Sophie");
+  await run("gemini", "gemini-3.1-flash-tts-preview", "Kore");
+  await run("sarvam", "bulbul:v3", "priya");
+  // Reports a missing key rather than failing the run; this path has never
+  // been confirmed against the live API. See app/lib/capabilities.ts.
+  await run("bodhan", "indic-speak", "Kavya");
   console.log("\nwrote /tmp/tts-*.wav\n");
 })();

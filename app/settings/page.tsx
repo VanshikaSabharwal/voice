@@ -3,8 +3,10 @@
 import { useMemo, useState } from "react";
 import { LANGUAGES, type AgentConfig } from "../lib/types";
 import {
-  providersFor, modelsFor, voicesFor, firstModelId, firstVoiceId,
+  providersFor, modelsFor, voicesFor, firstModelId,
   unsupportedFormats, firstSupportedFormat, firstVoiceForModel, findVoice,
+  modelsNotSupportingLanguage, providersNotSupportingLanguage,
+  firstModelIdForLanguage, findModel, supportsLanguage,
 } from "../lib/capabilities";
 import {
   findingsFor, sectionStatus, hasBlockingErrors, firstError,
@@ -13,6 +15,7 @@ import {
 } from "../lib/validate";
 import { useValidation } from "../lib/useValidation";
 import { useConfig } from "../lib/ConfigContext";
+import { PRESETS } from "../lib/presets";
 import { Field, Select, TextInput, Slider, SectionCard } from "../components/Fields";
 import ValidationStatus from "../components/ValidationStatus";
 import { SaveIcon, MicIcon, SparkIcon, WaveIcon, ToolIcon, PlusIcon, TrashIcon } from "../components/Icons";
@@ -46,7 +49,14 @@ const CONFIG_ID = "default-agent";
    showing Sarvam while the bot still called Gemini.
 
    Loading is the provider's job — doing it here too would race it. */
-const { cfg, setCfg, ready } = useConfig();
+const { cfg, setCfg, activeId, setActiveId, ready } = useConfig();
+
+/* Presets are read-only, so saving while one is selected writes to the user's
+   own config instead of failing. Without this the save landed on
+   "default-agent" whatever was selected, reported success, and left the
+   selected preset unchanged — so the next call still used the old providers
+   and the edit looked like it had not saved at all. */
+const editingBuiltin = PRESETS.some((p) => p.id === activeId);
 
   const { findings, probeRan } = useValidation(cfg);
   const blocked = hasBlockingErrors(findings);
@@ -63,11 +73,23 @@ async function save() {
   if (blocked || !ready) return;
   setSaveError(null);
 
+  // A preset cannot be written to, so its edits are saved as the user's own
+  // config; anything else saves back to whatever is selected.
+  const targetId = !activeId || editingBuiltin ? CONFIG_ID : activeId;
+
+  // Distinguish the copy from the preset it came from, or the sidebar shows
+  // two entries with the same name and selecting the wrong one silently uses
+  // the wrong providers.
+  const name =
+    editingBuiltin && cfg.name === PRESETS.find((p) => p.id === activeId)?.config.name
+      ? `${cfg.name} (edited)`
+      : cfg.name;
+
   try {
     const response = await fetch("/api/configs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: CONFIG_ID, name: cfg.name, config: cfg }),
+      body: JSON.stringify({ id: targetId, name, config: { ...cfg, name } }),
     });
 
     const data = await response.json().catch(() => ({}));
@@ -75,9 +97,15 @@ async function save() {
       throw new Error(data.error || "Failed to save configuration.");
     }
 
+    // Select what was just written. Saving from a preset would otherwise
+    // leave the read-only original selected, so the next call would still use
+    // the old providers — the exact confusion this save is meant to end.
+    if (activeId !== targetId) setActiveId(targetId);
+    if (name !== cfg.name) setCfg((c) => ({ ...c, name }));
+
     // Best-effort browser copy; never fail a completed save over it.
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...cfg, name }));
     } catch {}
 
     setSaved(true);
@@ -109,6 +137,27 @@ async function save() {
   const markedVoices = useMemo(() => invalidVoiceIds(cfg), [cfg]);
   const unusableVoices = useMemo(() => disabledVoiceIds(cfg), [cfg]);
 
+  /* Models and providers that cannot handle the agent's language are marked
+     (⚠) rather than removed — see modelsNotSupportingLanguage for why. This is
+     what makes the language choice visibly drive the three provider sections
+     instead of only producing an error after the fact. */
+  const langMarkedSttModels = useMemo(
+    () => modelsNotSupportingLanguage("stt", cfg.stt.provider, cfg.language),
+    [cfg.stt.provider, cfg.language],
+  );
+  const langMarkedTtsModels = useMemo(
+    () => modelsNotSupportingLanguage("tts", cfg.tts.provider, cfg.language),
+    [cfg.tts.provider, cfg.language],
+  );
+  const langMarkedSttProviders = useMemo(
+    () => providersNotSupportingLanguage("stt", cfg.language),
+    [cfg.language],
+  );
+  const langMarkedTtsProviders = useMemo(
+    () => providersNotSupportingLanguage("tts", cfg.language),
+    [cfg.language],
+  );
+
   /* Recording format derives from the STT model, so formats the model cannot
      accept are rendered unselectable rather than left to fail validation.
      They stay visible (struck through with ✕) so the constraint is legible. */
@@ -138,7 +187,9 @@ async function save() {
      valid value in the same update, so the user is never left holding a
      combination the next screen would reject. */
   function setSttProvider(provider: string) {
-    const model = firstModelId("stt", provider);
+    // Prefer a model that speaks the language already chosen, so switching
+    // provider does not raise an error the user did nothing to cause.
+    const model = firstModelIdForLanguage("stt", provider, cfg.language);
     applySttModel(provider, model);
   }
   function setSttModel(model: string) {
@@ -164,10 +215,11 @@ async function save() {
   }
 
   function setTtsProvider(provider: string) {
+    const model = firstModelIdForLanguage("tts", provider, cfg.language);
     patch("tts", {
       provider,
-      model: firstModelId("tts", provider),
-      voice: firstVoiceId(provider),
+      model,
+      voice: firstVoiceForModel(provider, model, cfg.language),
     });
   }
   /** Changing the TTS model can strand the voice, so move it to a valid one. */
@@ -181,7 +233,65 @@ async function save() {
         tts: {
           ...c.tts,
           model,
-          voice: stranded ? firstVoiceForModel(c.tts.provider, model) : c.tts.voice,
+          voice: stranded
+            ? firstVoiceForModel(c.tts.provider, model, c.language)
+            : c.tts.voice,
+        },
+      };
+    });
+  }
+
+  /* Changing the language re-points STT/TTS at models and a voice that can
+     actually handle it. This is what makes "pick the language first" work: the
+     three sections follow the language instead of silently contradicting it.
+
+     Only choices the new language INVALIDATES are moved — a still-valid
+     selection is left exactly as the user set it. Providers are never switched
+     for the user; if one has nothing for the language, its marks and the
+     validator's suggestions say so. */
+  function setLanguage(language: string) {
+    setCfg((c) => {
+      const sttOk = supportsLanguage(
+        findModel("stt", c.stt.provider, c.stt.model)?.languages ?? null,
+        language,
+      );
+      const ttsOk = supportsLanguage(
+        findModel("tts", c.tts.provider, c.tts.model)?.languages ?? null,
+        language,
+      );
+
+      const sttModel = sttOk
+        ? c.stt.model
+        : firstModelIdForLanguage("stt", c.stt.provider, language);
+      const ttsModel = ttsOk
+        ? c.tts.model
+        : firstModelIdForLanguage("tts", c.tts.provider, language);
+
+      const voiceOk = supportsLanguage(
+        findVoice(c.tts.provider, c.tts.voice)?.languages ?? null,
+        language,
+      );
+
+      return {
+        ...c,
+        language,
+        stt: { ...c.stt, model: sttModel },
+        tts: {
+          ...c.tts,
+          model: ttsModel,
+          voice:
+            voiceOk && ttsModel === c.tts.model
+              ? c.tts.voice
+              : firstVoiceForModel(c.tts.provider, ttsModel, language),
+        },
+        general: {
+          ...c.general,
+          recordingFormat: firstSupportedFormat(
+            c.stt.provider,
+            sttModel,
+            RECORDING_FORMATS.map((f) => f.value),
+            c.general.recordingFormat,
+          ),
         },
       };
     });
@@ -207,9 +317,24 @@ async function save() {
             }`}
         >
           <SaveIcon className="h-4 w-4" />
-          {!ready ? "Loading…" : saved ? "Saved" : "Validate & Save"}
+          {!ready
+            ? "Loading…"
+            : saved
+              ? "Saved"
+              : editingBuiltin
+                ? "Save as a Copy"
+                : "Validate & Save"}
         </button>
       </header>
+
+      {/* Say up front that this one cannot be written to. Discovering it only
+          after saving is what made an edit look like it had been lost. */}
+      {editingBuiltin && (
+        <p className="mt-3 rounded-lg bg-[var(--surface-muted)] px-3 py-2 text-xs text-[var(--text-muted)]">
+          This is a built-in configuration and cannot be changed. Saving will
+          create your own editable copy and select it.
+        </p>
+      )}
 
       {saveError && (
         <p className="mt-3 text-xs text-[var(--danger)]">{saveError}</p>
@@ -255,7 +380,7 @@ async function save() {
                 <Field label="Language">
                   <Select
   value={cfg.language}
-  onChange={(v) => setCfg({ ...cfg, language: v })}
+  onChange={setLanguage}
   options={LANGUAGES}
 />
                 </Field>
@@ -280,10 +405,10 @@ async function save() {
             >
               <div className="grid gap-4 sm:grid-cols-3">
                 <Field label="Provider">
-                  <Select value={cfg.stt.provider} onChange={setSttProvider} options={providersFor("stt")} />
+                  <Select value={cfg.stt.provider} onChange={setSttProvider} options={providersFor("stt")} invalidValues={langMarkedSttProviders} />
                 </Field>
                 <Field label="Model" findings={findingsFor(findings, "stt", "model")}>
-                  <Select value={cfg.stt.model} onChange={setSttModel} options={sttModels} />
+                  <Select value={cfg.stt.model} onChange={setSttModel} options={sttModels} invalidValues={langMarkedSttModels} />
                 </Field>
                 <Field label="Language" findings={findingsFor(findings, "stt", "language")}>
                   <Select
@@ -354,10 +479,10 @@ async function save() {
             >
               <div className="grid gap-4 sm:grid-cols-3">
                 <Field label="Provider">
-                  <Select value={cfg.tts.provider} onChange={setTtsProvider} options={providersFor("tts")} />
+                  <Select value={cfg.tts.provider} onChange={setTtsProvider} options={providersFor("tts")} invalidValues={langMarkedTtsProviders} />
                 </Field>
                 <Field label="Model" findings={findingsFor(findings, "tts", "model")}>
-                  <Select value={cfg.tts.model} onChange={setTtsModel} options={ttsModels} />
+                  <Select value={cfg.tts.model} onChange={setTtsModel} options={ttsModels} invalidValues={langMarkedTtsModels} />
                 </Field>
                 <Field label="Voice" findings={findingsFor(findings, "tts", "voice")}>
                   <Select
@@ -435,7 +560,7 @@ async function save() {
               <Field label="Language">
                 <Select
                   value={cfg.language}
-                  onChange={(v) => setCfg({ ...cfg, language: v })}
+                  onChange={setLanguage}
                   options={LANGUAGES}
                 />
               </Field>
@@ -462,10 +587,10 @@ async function save() {
           >
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="Provider">
-                <Select value={cfg.stt.provider} onChange={setSttProvider} options={providersFor("stt")} />
+                <Select value={cfg.stt.provider} onChange={setSttProvider} options={providersFor("stt")} invalidValues={langMarkedSttProviders} />
               </Field>
               <Field label="Model" findings={findingsFor(findings, "stt", "model")}>
-                <Select value={cfg.stt.model} onChange={setSttModel} options={sttModels} />
+                <Select value={cfg.stt.model} onChange={setSttModel} options={sttModels} invalidValues={langMarkedSttModels} />
               </Field>
               <Field label="Language" findings={findingsFor(findings, "stt", "language")}>
                 <Select
@@ -542,10 +667,10 @@ async function save() {
           >
             <div className="grid gap-4 sm:grid-cols-3">
               <Field label="Provider">
-                <Select value={cfg.tts.provider} onChange={setTtsProvider} options={providersFor("tts")} />
+                <Select value={cfg.tts.provider} onChange={setTtsProvider} options={providersFor("tts")} invalidValues={langMarkedTtsProviders} />
               </Field>
               <Field label="Model" findings={findingsFor(findings, "tts", "model")}>
-                <Select value={cfg.tts.model} onChange={setTtsModel} options={ttsModels} />
+                <Select value={cfg.tts.model} onChange={setTtsModel} options={ttsModels} invalidValues={langMarkedTtsModels} />
               </Field>
               <Field label="Voice" findings={findingsFor(findings, "tts", "voice")}>
                 <Select

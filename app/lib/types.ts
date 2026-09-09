@@ -122,6 +122,14 @@ export const DEFAULT_CONFIG: AgentConfig = {
       enabled: true,
       params: '{ "customer_id": "string", "issue": "string", "priority": "string" }',
     },
+    {
+      id: "search_policies",
+      name: "search_policies",
+      description:
+        "Search company policy documents to answer questions about rules, terms and procedures.",
+      enabled: true,
+      params: '{ "query": "string" }',
+    },
   ],
 
   general: {

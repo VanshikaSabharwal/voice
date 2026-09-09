@@ -7,9 +7,10 @@
  *
  * Two consumers:
  *   - STT, which needs the captured 8 kHz PCM wrapped as a WAV to upload.
- *   - The Sarvam TTS path, which returns WAV at its own rate and must be
- *     brought down to 8 kHz. (ElevenLabs and Cartesia emit mu-law directly,
- *     so they never touch this file.)
+ *   - The Sarvam and Gemini TTS paths, which return audio at their own rates
+ *     (WAV, and headerless 24 kHz PCM16 respectively) and must be brought down
+ *     to 8 kHz. (ElevenLabs and Cartesia emit mu-law directly, so they never
+ *     touch this file.)
  */
 
 export type ParsedWav = {

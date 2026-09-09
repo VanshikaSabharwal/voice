@@ -59,6 +59,12 @@ export const TTS_OUTPUT_FORMATS: Record<string, string[]> = {
   cartesia: ["ulaw_8000", "pcm_16000", "mp3"],
   // WAV only at a fixed rate, so telephony needs a resample on this path.
   sarvam: ["wav"],
+  // Verified: returns raw PCM16 at 24 kHz ("audio/l16; rate=24000"), never
+  // mu-law, so this path resamples like Sarvam's.
+  gemini: ["pcm_24000"],
+  // WAV (PCM16 24 kHz mono) per the API reference; no mu-law option, so this
+  // path resamples too. Taken from docs, NOT probed — see the catalog entry.
+  bodhan: ["wav"],
 };
 
 /**
@@ -135,6 +141,32 @@ export const STT_CATALOG: ProviderCapability[] = [
     ],
   },
   {
+    provider: "bodhan",
+    label: "Bodhan",
+    modality: "stt",
+    voices: [],
+    /*
+     * OpenAI-compatible /v1/audio/transcriptions. UNVERIFIED — see the note on
+     * the Bodhan entry in TTS_CATALOG; taken from the API reference, not from a
+     * live probe.
+     */
+    models: [
+      {
+        id: "indic-transcribe",
+        label: "indic-transcribe",
+        // 25+ Indian languages plus English; narrowed to this app's set.
+        languages: ["en", "en-IN", ...INDIC],
+        // WAV is the documented format; FLAC/OGG/MP3 also accepted. WebM is
+        // not listed, so the browser re-encodes as it does for Sarvam.
+        inputFormats: ["wav", "mp3"],
+        toolCalling: null,
+        contextWindow: null,
+        maxOutputTokens: null,
+        streaming: false,
+      },
+    ],
+  },
+  {
     provider: "sarvam",
     label: "Sarvam",
     modality: "stt",
@@ -167,8 +199,29 @@ export const LLM_CATALOG: ProviderCapability[] = [
     label: "Gemini",
     modality: "llm",
     voices: [],
-    // Ids and token limits verified against the live ListModels endpoint.
+    // Ids and token limits verified against the live ListModels endpoint;
+    // tool calling confirmed per model with a live functionDeclarations probe.
     models: [
+      {
+        id: "gemini-3.8-flash",
+        label: "gemini-3.8-flash",
+        languages: WIDE,
+        inputFormats: null,
+        toolCalling: true,
+        contextWindow: 1048576,
+        maxOutputTokens: 65536,
+        streaming: true,
+      },
+      {
+        id: "gemini-3.5-flash-lite",
+        label: "gemini-3.5-flash-lite (fastest)",
+        languages: WIDE,
+        inputFormats: null,
+        toolCalling: true,
+        contextWindow: 1048576,
+        maxOutputTokens: 65536,
+        streaming: true,
+      },
       {
         id: "gemini-3.6-flash",
         label: "gemini-3.6-flash",
@@ -255,6 +308,128 @@ export const LLM_CATALOG: ProviderCapability[] = [
 // ---------------------------------------------------------------------------
 
 export const TTS_CATALOG: ProviderCapability[] = [
+  {
+    provider: "gemini",
+    label: "Gemini",
+    modality: "tts",
+    /*
+     * Ids verified against the live ListModels endpoint and each confirmed to
+     * return audio from :generateContent with responseModalities:["AUDIO"].
+     * The native-audio models are excluded deliberately: they expose only
+     * bidiGenerateContent (the Live websocket API), not the request/response
+     * call this engine makes.
+     *
+     * All three emit 24 kHz PCM16 rather than mu-law, so this provider is the
+     * second resampling path in lib/agent/tts.ts.
+     */
+    models: [
+      {
+        id: "gemini-3.1-flash-tts-preview",
+        label: "gemini-3.1-flash-tts-preview",
+        languages: WIDE,
+        inputFormats: null,
+        toolCalling: null,
+        contextWindow: null,
+        maxOutputTokens: null,
+        // One non-streamed audio blob per request; see the module comment.
+        streaming: false,
+      },
+      {
+        id: "gemini-2.5-flash-preview-tts",
+        label: "gemini-2.5-flash-preview-tts",
+        languages: WIDE,
+        inputFormats: null,
+        toolCalling: null,
+        contextWindow: null,
+        maxOutputTokens: null,
+        streaming: false,
+      },
+      {
+        id: "gemini-2.5-pro-preview-tts",
+        label: "gemini-2.5-pro-preview-tts",
+        languages: WIDE,
+        inputFormats: null,
+        toolCalling: null,
+        contextWindow: null,
+        maxOutputTokens: null,
+        streaming: false,
+      },
+    ],
+    /*
+     * Prebuilt voices, each verified to return 200 against the live API (an
+     * invented name returns 400, so the probe distinguishes real ids).
+     * Every voice works with every TTS model, and the language range is a
+     * property of the model here, so both fields stay unrestricted.
+     */
+    voices: [
+      { id: "Kore", label: "Kore", languages: null, modelIds: null },
+      { id: "Puck", label: "Puck", languages: null, modelIds: null },
+      { id: "Charon", label: "Charon", languages: null, modelIds: null },
+      { id: "Aoede", label: "Aoede", languages: null, modelIds: null },
+      { id: "Leda", label: "Leda", languages: null, modelIds: null },
+      { id: "Zephyr", label: "Zephyr", languages: null, modelIds: null },
+      { id: "Orus", label: "Orus", languages: null, modelIds: null },
+      { id: "Fenrir", label: "Fenrir", languages: null, modelIds: null },
+    ],
+  },
+  {
+    provider: "bodhan",
+    label: "Bodhan",
+    modality: "tts",
+    /*
+     * Bodhan (AI4Bharat / IIT Madras): one Indic speech API behind an
+     * OpenAI-compatible surface.
+     *
+     * UNVERIFIED, unlike every other entry in this file: no BODHAN_API_KEY was
+     * available when this was written, so the ids, voices and formats below
+     * come from the published API reference rather than from a live probe.
+     * Confirm with `npm run verify:tts` once a key is configured.
+     *
+     * Returns WAV (PCM16 24 kHz) with no mu-law option, so it resamples.
+     */
+    models: [
+      {
+        id: "indic-speak",
+        label: "indic-speak",
+        // 22 Indian languages + English; narrowed to this app's language set.
+        languages: ["en", "en-IN", ...INDIC],
+        inputFormats: null,
+        toolCalling: null,
+        contextWindow: null,
+        maxOutputTokens: null,
+        streaming: false,
+      },
+    ],
+    /*
+     * Each voice was recorded in one language — carried in the label, so the
+     * user can match voice to language — but the API reference is explicit
+     * that "any voice can read any of the languages". The recording language
+     * is therefore a quality hint, not a capability limit, and `languages`
+     * stays null per this file's convention: unknown/unrestricted, and never
+     * a source of findings.
+     *
+     * Encoding the recording language here instead would be actively wrong:
+     * it would strand English (no voice was recorded in it) and would warn on
+     * every Tamil/Telugu/Marathi/Bengali selection that landed on the first
+     * voice in the list.
+     *
+     * This is the subset of the 45 voices covering the languages this app
+     * offers; Bodhan's full list spans 22 languages.
+     */
+    voices: [
+      { id: "Kavya", label: "Kavya (Hindi)", languages: null, modelIds: null },
+      { id: "Suhani", label: "Suhani (Hindi)", languages: null, modelIds: null },
+      { id: "Amit", label: "Amit (Hindi)", languages: null, modelIds: null },
+      { id: "Anitha", label: "Anitha (Tamil)", languages: null, modelIds: null },
+      { id: "Arun", label: "Arun (Tamil)", languages: null, modelIds: null },
+      { id: "Sravani", label: "Sravani (Telugu)", languages: null, modelIds: null },
+      { id: "Vamsi", label: "Vamsi (Telugu)", languages: null, modelIds: null },
+      { id: "Anagha", label: "Anagha (Marathi)", languages: null, modelIds: null },
+      { id: "Chinmay", label: "Chinmay (Marathi)", languages: null, modelIds: null },
+      { id: "Ishita", label: "Ishita (Bengali)", languages: null, modelIds: null },
+      { id: "Sourav", label: "Sourav (Bengali)", languages: null, modelIds: null },
+    ],
+  },
   {
     provider: "elevenlabs",
     label: "ElevenLabs",
@@ -518,14 +693,84 @@ export function firstSupportedFormat(
   return allFormats.find((f) => model.inputFormats!.includes(f)) ?? preferred;
 }
 
-/** A voice valid for the given model, for auto-correcting on model switch. */
-export function firstVoiceForModel(provider: string, modelId: string): string {
+/**
+ * The provider's first model that can speak `lang`, falling back to its first
+ * model overall.
+ *
+ * Used when switching provider: landing on a model that cannot handle the
+ * language already chosen would raise an error the user did nothing to cause.
+ * The fallback keeps a provider with no model for the language selectable —
+ * the mark and the validator then explain why.
+ */
+export function firstModelIdForLanguage(
+  modality: Modality,
+  provider: string,
+  lang: LangCode,
+): string {
+  const p = findProvider(modality, provider);
+  if (!p) return "";
+  const match = p.models.find((m) => supportsLanguage(m.languages, lang));
+  return (match ?? p.models[0])?.id ?? "";
+}
+
+/**
+ * A voice valid for the given model, for auto-correcting on model switch.
+ *
+ * With `lang`, prefers a voice that also speaks it — otherwise switching to
+ * ElevenLabs on Hindi lands on Sarah (English-only) and warns immediately.
+ * Falls back to model-compatibility alone, then to the first voice, so a
+ * provider is never left with an empty selection.
+ */
+export function firstVoiceForModel(
+  provider: string,
+  modelId: string,
+  lang?: LangCode,
+): string {
   const p = findProvider("tts", provider);
   if (!p) return "";
+  const fitsModel = (x: VoiceCapability) =>
+    x.modelIds === null || x.modelIds.includes(modelId);
   const v =
-    p.voices.find((x) => x.modelIds === null || x.modelIds.includes(modelId)) ??
+    (lang !== undefined
+      ? p.voices.find((x) => fitsModel(x) && supportsLanguage(x.languages, lang))
+      : undefined) ??
+    p.voices.find(fitsModel) ??
     p.voices[0];
   return v?.id ?? "";
+}
+
+/**
+ * Model ids of one modality that cannot handle `lang`, for marking (NOT
+ * removing) them in the dropdowns.
+ *
+ * Language and provider are independent choices, so these are deliberately not
+ * filtered out the way model-derived fields are: a model that silently
+ * vanished would hide the user's own language choice as the cause. Marking
+ * keeps the constraint visible and leaves the validator's one-click fixes as
+ * the way out. Per the null convention, unknown language support never marks.
+ */
+export function modelsNotSupportingLanguage(
+  modality: Modality,
+  provider: string,
+  lang: LangCode,
+): Set<string> {
+  const p = findProvider(modality, provider);
+  if (!p) return new Set();
+  return new Set(
+    p.models.filter((m) => !supportsLanguage(m.languages, lang)).map((m) => m.id),
+  );
+}
+
+/** Providers of one modality with no model at all for `lang`. */
+export function providersNotSupportingLanguage(
+  modality: Modality,
+  lang: LangCode,
+): Set<string> {
+  return new Set(
+    CATALOGS[modality]
+      .filter((p) => !p.models.some((m) => supportsLanguage(m.languages, lang)))
+      .map((p) => p.provider),
+  );
 }
 
 /**

@@ -127,10 +127,17 @@ export function failCall(id: string, error: string): void {
   scheduleFlush();
 }
 
-export async function endCall(id: string): Promise<void> {
+/**
+ * Close a call and flush it to disk.
+ *
+ * Returns the finished record so the caller can report on it without a second
+ * lookup — by the time this resolves the call is out of `active`, and finding
+ * it again would mean re-reading the file.
+ */
+export async function endCall(id: string): Promise<CallRecord | undefined> {
   const record = active.get(id);
 
-  if (!record) return;
+  if (!record) return undefined;
 
   record.endedAt = Date.now();
   record.status = record.error ? "failed" : "completed";
@@ -144,6 +151,8 @@ export async function endCall(id: string): Promise<void> {
 
   enqueueWrite();
   await writeChain;
+
+  return record;
 }
 
 export async function listCalls(limit = 50): Promise<CallRecord[]> {

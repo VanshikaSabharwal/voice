@@ -37,7 +37,10 @@ export type TurnRecord = {
   interrupted?: boolean;
   toolsUsed?: string[];
   sttMs?: number;
+  /** Model inference only; tool execution is reported separately as toolMs. */
   llmMs?: number;
+  /** Time inside tools (RAG retrieval, lookups), carved out of the LLM stage. */
+  toolMs?: number;
   ttsMs?: number;
 };
 
@@ -65,6 +68,69 @@ const VAD_REPORT_EVERY = 5;
 
 /** Consecutive unanswered prompts before giving up and ending the call. */
 const MAX_REPROMPTS = 3;
+
+/**
+ * Shortest capture worth sending to STT, in frames (20 ms each).
+ *
+ * A door closing or a cough clears the energy threshold but cannot be a
+ * sentence. Below this the audio is discarded without an STT call, which also
+ * saves the round trip and the per-request cost.
+ */
+const MIN_UTTERANCE_FRAMES = 15; // 300 ms
+
+/**
+ * Frames of *speech* above which a filler transcript is believed.
+ *
+ * A spoken "yes" carries sustained energy; a noise trigger is mostly silence
+ * that happened to cross the threshold. Counting speech frames separates the
+ * two, so the filter can drop hallucinations without swallowing a real
+ * one-word answer. Anything at or above this is taken at face value.
+ */
+const SPOKEN_FILLER_FRAMES = 10; // 200 ms of actual speech
+
+/**
+ * Transcripts to treat as "nothing was said".
+ *
+ * STT models are trained to always emit text, so on pure noise they do not
+ * return empty — they hallucinate the most probable short utterance. Verified
+ * against the live APIs: 1.5 s of white/pink/mains-hum noise makes Sarvam
+ * return "हाँ।" / "हाँ हाँ।" / "हाँ जी।" every time (Gemini correctly returns
+ * empty). Without this guard the agent answers a "yes" the caller never said.
+ *
+ * Deliberately narrow: only filler with no content, and only when it is the
+ * WHOLE transcript — and even then only when the capture carried too little
+ * speech to contain it (see SPOKEN_FILLER_FRAMES). A caller answering "yes" to
+ * "shall I book that?" must survive.
+ */
+const NOISE_TRANSCRIPTS = new Set([
+  // Hindi/Indic fillers Sarvam produces from noise.
+  "हाँ", "हां", "हा", "जी", "अच्छा", "ठीक", "हूँ", "हम",
+  // English equivalents seen from noise on other providers.
+  "yeah", "yes", "yep", "uh", "um", "hmm", "mm", "mhm", "ah", "oh", "okay", "ok",
+  // Common transcriber placeholders for non-speech.
+  "you", "thank you", "thanks for watching", "bye",
+]);
+
+/**
+ * Is this transcript most likely hallucinated from noise rather than spoken?
+ *
+ * Strips punctuation and splits into words, then asks whether every word is a
+ * contentless filler. A one-or-two-word all-filler transcript from a capture
+ * that was mostly silence is the signature of a noise trigger.
+ */
+function looksLikeNoise(text: string): boolean {
+  const words = text
+    .toLowerCase()
+    .replace(/[.,!?;:।॥"'`]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+
+  // An empty or very long transcript is handled elsewhere; only short
+  // all-filler results are suspect.
+  if (words.length === 0 || words.length > 3) return false;
+
+  return words.every((w) => NOISE_TRANSCRIPTS.has(w));
+}
 
 export class CallSession {
   readonly id: string;
@@ -98,6 +164,8 @@ export class CallSession {
   private ttsAbort: AbortController | null = null;
 
   private captureFrames = 0;
+  /** Frames of the current capture the VAD judged to be speech. */
+  private speechFrames = 0;
   private idleFrames = 0;
   private frameCounter = 0;
   private reprompts = 0;
@@ -115,6 +183,7 @@ export class CallSession {
     toolsUsed?: string[];
     sttMs?: number;
     llmMs?: number;
+    toolMs?: number;
     ttsMs?: number;
   } | null = null;
 
@@ -265,6 +334,9 @@ export class CallSession {
     // capturing
     this.transcriber?.push(frame);
     this.captureFrames++;
+    // Track how much of this capture was actually speech, so finishTurn can
+    // tell a spoken one-word answer from noise that tripped the threshold.
+    if (reading.speech) this.speechFrames++;
 
     if (reading.event === "endpoint") {
       void this.finishTurn();
@@ -296,6 +368,7 @@ export class CallSession {
 
     this.idleFrames = 0;
     this.captureFrames = 0;
+    this.speechFrames = 0;
     // The caller is there after all; forget any unanswered prompts.
     this.reprompts = 0;
     this.transcriber = createTranscriber(this.cfg);
@@ -323,7 +396,9 @@ export class CallSession {
     // agent's opening syllable echoes back and would instantly interrupt it.
     if (Date.now() - this.speakingSince < BARGE_IN_GUARD_MS) return;
 
-    if (!this.bargeIn.push(pcm, this.vad.threshold)) return;
+    // The raw noise floor, not vad.threshold: the detector applies its own
+    // ratio, and passing an already-scaled threshold applied it twice.
+    if (!this.bargeIn.push(pcm, this.vad.floor)) return;
 
     this.interrupt();
 
@@ -371,6 +446,7 @@ export class CallSession {
         toolsUsed: meta?.toolsUsed,
         sttMs: meta?.sttMs,
         llmMs: meta?.llmMs,
+        toolMs: meta?.toolMs,
         ttsMs: meta?.ttsMs,
       });
 
@@ -422,6 +498,7 @@ export class CallSession {
         toolsUsed: done.toolsUsed,
         sttMs: done.sttMs,
         llmMs: done.llmMs,
+        toolMs: done.toolMs,
         ttsMs: done.ttsMs,
       });
     }
@@ -436,10 +513,22 @@ export class CallSession {
   private async finishTurn(): Promise<void> {
     const turn = this.turnId;
     const transcriber = this.transcriber;
+    // Snapshot now: beginCapture resets this, and the checks below run after
+    // awaits during which a new capture may already have started.
+    const speechFrames = this.speechFrames;
 
     this.transcriber = null;
 
     if (!transcriber) return;
+
+    /* Too short to be a sentence — a cough, a door, a line pop. Discard it
+       without an STT round trip rather than paying for a transcription that
+       can only come back as a hallucinated filler word. */
+    if (transcriber.frameCount < MIN_UTTERANCE_FRAMES) {
+      transcriber.cancel();
+      this.beginListening();
+      return;
+    }
 
     this.setState("thinking");
 
@@ -469,13 +558,25 @@ export class CallSession {
       return;
     }
 
+    /* Noise that STT turned into words. Go back to listening WITHOUT speaking:
+       the caller said nothing, so a fallback prompt here would have the agent
+       talking at a room, and each phantom turn also pushes a fake "user" line
+       into history that the model then tries to answer.
+
+       The reprompt timer keeps running, so a genuinely silent line still gets
+       nudged by the idle path rather than being ignored forever. */
+    if (speechFrames < SPOKEN_FILLER_FRAMES && looksLikeNoise(text)) {
+      this.beginListening();
+      return;
+    }
+
     this.pushHistory("user", text);
     this.hooks.onTurn?.({ role: "user", text, at: Date.now(), sttMs });
 
     const llmStart = Date.now();
     this.llmAbort = new AbortController();
 
-    let reply: { text: string; toolsUsed: string[] };
+    let reply: { text: string; toolsUsed: string[]; toolMs?: number };
 
     try {
       reply = await runAgent(this.cfg, this.history, this.llmAbort.signal);
@@ -492,20 +593,30 @@ export class CallSession {
     // Checkpoint two: interruption may have landed while the model thought.
     if (turn !== this.turnId || this.closed) return;
 
-    const llmMs = Date.now() - llmStart;
+    /* runAgent's elapsed time covers model inference AND any tool round trips
+       it made. Report them apart: a slow turn caused by RAG retrieval needs a
+       different fix from one caused by the model, and a single combined number
+       cannot tell you which you have. */
+    const toolMs = reply.toolMs ?? 0;
+    const llmMs = Math.max(0, Date.now() - llmStart - toolMs);
 
     if (!reply.text) {
       await this.say(this.params.fallbackMessage);
       return;
     }
 
-    await this.say(reply.text, { llmMs, sttMs, toolsUsed: reply.toolsUsed });
+    await this.say(reply.text, {
+      llmMs,
+      sttMs,
+      toolMs: toolMs > 0 ? toolMs : undefined,
+      toolsUsed: reply.toolsUsed,
+    });
   }
 
   /** Speak text to the caller, streaming frames as they are generated. */
   private async say(
     text: string,
-    meta?: { llmMs?: number; sttMs?: number; toolsUsed?: string[] },
+    meta?: { llmMs?: number; sttMs?: number; toolMs?: number; toolsUsed?: string[] },
   ): Promise<void> {
     const turn = this.turnId;
 
@@ -567,6 +678,7 @@ export class CallSession {
       toolsUsed: meta?.toolsUsed,
       sttMs: meta?.sttMs,
       llmMs: meta?.llmMs,
+      toolMs: meta?.toolMs,
       ttsMs,
     };
 

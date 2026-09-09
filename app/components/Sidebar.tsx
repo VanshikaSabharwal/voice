@@ -84,6 +84,17 @@ function SidebarFooter({ onNavigate }: { onNavigate: () => void }) {
                 }`}
             >
               <span className="truncate">{entry.name}</span>
+
+              {/* A built-in and a saved config can share a name — the saved one
+                  usually began as a copy of the preset. Without this badge the
+                  two are indistinguishable, and edits appear not to save
+                  because the read-only twin was the one selected. */}
+              {entry.builtin && (
+                <span className="shrink-0 rounded bg-[var(--surface-muted)] px-1 py-px text-[9px] text-[var(--text-subtle)]">
+                  built-in
+                </span>
+              )}
+
               {activeId === entry.id && (
                 <span className="ml-auto shrink-0 text-[10px]">Active</span>
               )}

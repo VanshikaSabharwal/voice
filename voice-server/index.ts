@@ -23,6 +23,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { BrowserTransport } from "../lib/call/browser-transport";
 import { CallSession, type CallState, type TurnRecord } from "../lib/call/session";
 import * as registry from "../lib/call/registry";
+import { callStats, formatCallStats } from "../lib/call/stats";
 import * as store from "../lib/store/calls";
 import { getAgentConfig } from "../app/lib/config";
 import { DEFAULT_CONFIG, type AgentConfig } from "../app/lib/types";
@@ -246,8 +247,31 @@ async function handleCall(ws: WebSocket, url: URL): Promise<void> {
       },
       onEnded: () => {
         registry.unregister(id);
-        void store.endCall(id);
-        console.log(`[call ${id.slice(0, 8)}] ended`);
+
+        // Latency is the feature on a phone call, so every call reports how it
+        // actually performed rather than leaving it to be reconstructed from
+        // per-turn lines scattered up the log.
+        void store.endCall(id).then((record) => {
+          const short = id.slice(0, 8);
+
+          if (!record) {
+            console.log(`[call ${short}] ended`);
+            return;
+          }
+
+          const seconds = record.endedAt
+            ? ((record.endedAt - record.startedAt) / 1000).toFixed(1)
+            : "?";
+
+          const stats = callStats(record.turns);
+          const summary = formatCallStats(stats);
+
+          console.log(
+            `[call ${short}] ended after ${seconds}s, ${stats.turns} measured turn(s)`,
+          );
+
+          if (summary) console.log(summary);
+        });
       },
     },
   });

@@ -6,7 +6,7 @@
  * module works in raw bytes, which is what a phone call produces.
  */
 
-import { keyFor } from "../../app/lib/providers/env";
+import { envVarFor, keyFor } from "../../app/lib/providers/env";
 import { STT_TIMEOUT_MS, describeFailure, withDeadline } from "./deadline";
 
 export type TranscribeInput = {
@@ -137,17 +137,71 @@ async function transcribeSarvam(input: TranscribeInput, key: string): Promise<st
   return (data.transcript ?? "").trim();
 }
 
+/**
+ * Bodhan — OpenAI-compatible /v1/audio/transcriptions.
+ *
+ * UNVERIFIED against a live endpoint (no key was available); written from the
+ * published API reference. See the Bodhan note in app/lib/capabilities.ts.
+ */
+async function transcribeBodhan(input: TranscribeInput, key: string): Promise<string> {
+  const form = new FormData();
+
+  form.append(
+    "file",
+    new Blob([new Uint8Array(input.bytes)], { type: input.mimeType }),
+    input.filename,
+  );
+  form.append("model", input.model);
+
+  // Bodhan takes a bare two-letter code, and the field is optional — omitting
+  // it on "auto" lets the model detect the language itself.
+  if (input.language && input.language !== "auto") {
+    form.append("language", input.language.split("-")[0]);
+  }
+
+  const res = await fetch("https://api.bodhan.ai/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}` },
+    body: form,
+    cache: "no-store",
+    signal: withDeadline(input.signal, STT_TIMEOUT_MS),
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+
+    // Bodhan scopes a key to one model, so the most likely misconfiguration is
+    // a TTS key being used here. Their message names the models the key can
+    // reach but not what to do about it, which is the part worth adding.
+    if (res.status === 403 && detail.includes("key_model_access_denied")) {
+      throw new Error(
+        `Bodhan STT 403: this key is not permitted to use ${input.model}. ` +
+          "Bodhan issues one key per model — create a key for the transcription " +
+          "model and set BODHAN_STT_API_KEY.",
+      );
+    }
+
+    throw new Error(`Bodhan STT ${res.status}: ${detail.slice(0, 1000)}`);
+  }
+
+  const data = await res.json();
+  return (data.text ?? "").trim();
+}
+
 /** Transcribe one utterance. Throws on provider or configuration errors. */
 export async function transcribe(input: TranscribeInput): Promise<string> {
-  const key = keyFor(input.provider);
+  const key = keyFor(input.provider, "stt");
 
   if (!key) {
-    throw new Error(`No API key configured for ${input.provider}.`);
+    throw new Error(
+      `No API key configured for ${input.provider}. Set ${envVarFor(input.provider, "stt")}.`,
+    );
   }
 
   try {
     if (input.provider === "gemini") return await transcribeGemini(input, key);
     if (input.provider === "sarvam") return await transcribeSarvam(input, key);
+    if (input.provider === "bodhan") return await transcribeBodhan(input, key);
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError" && input.signal?.aborted) {
       throw err;

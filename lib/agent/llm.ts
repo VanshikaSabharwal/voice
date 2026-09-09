@@ -16,7 +16,24 @@ import { LLM_TIMEOUT_MS, describeFailure, withDeadline } from "./deadline";
 /** Cap tool round-trips so a confused model cannot loop forever. */
 const MAX_TOOL_ROUNDS = 4;
 
-export type LlmResult = { text: string; toolsUsed: string[] };
+export type LlmResult = {
+  text: string;
+  toolsUsed: string[];
+  /**
+   * Wall-clock spent inside tool implementations, summed over every round.
+   *
+   * Separated from the enclosing llmMs because they are different problems
+   * with different fixes: model time is a provider/model choice, while tool
+   * time is our own retrieval and I/O. A turn that spends 6 s in RAG and 2 s
+   * thinking looks identical to one that spends 8 s thinking unless the two
+   * are measured apart.
+   *
+   * Concurrent calls within a round overlap, so this is elapsed time rather
+   * than the sum of individual calls — it answers "how long did the caller
+   * wait for tools", not "how much tool work happened".
+   */
+  toolMs?: number;
+};
 
 export function systemPromptFor(cfg: AgentConfig): string {
   const base = cfg.llm.systemPrompt?.trim() || cfg.systemPrompt;
@@ -89,6 +106,7 @@ async function runGemini(
   }));
 
   const toolsUsed: string[] = [];
+  let toolMs = 0;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     cfg.llm.model,
   )}:generateContent?key=${encodeURIComponent(key)}`;
@@ -122,19 +140,28 @@ async function runGemini(
 
     if (calls.length > 0) {
       contents.push({ role: "model", parts });
-      contents.push({
-        role: "user",
-        parts: calls.map((p) => {
+
+      // Run the round's calls concurrently: a model asking for two lookups at
+      // once should not pay for them serially while the caller waits.
+      const toolStart = Date.now();
+
+      const responses = await Promise.all(
+        calls.map(async (p) => {
           const fc = p.functionCall!;
           toolsUsed.push(fc.name);
           return {
             functionResponse: {
               name: fc.name,
-              response: executeTool(fc.name, fc.args ?? {}),
+              response: await executeTool(fc.name, fc.args ?? {}),
             },
           };
         }),
-      });
+      );
+
+      // Elapsed, not summed: the calls above overlapped.
+      toolMs += Date.now() - toolStart;
+
+      contents.push({ role: "user", parts: responses });
       continue;
     }
 
@@ -143,10 +170,10 @@ async function runGemini(
       .join("")
       .trim();
 
-    return { text, toolsUsed };
+    return { text, toolsUsed, toolMs };
   }
 
-  return { text: "Sorry, I could not complete that request.", toolsUsed };
+  return { text: "Sorry, I could not complete that request.", toolsUsed, toolMs };
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +219,7 @@ async function runGroq(
   ];
 
   const toolsUsed: string[] = [];
+  let toolMs = 0;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -228,30 +256,41 @@ async function runGroq(
       // then one tool message per call, matched by tool_call_id.
       messages.push(message!);
 
-      for (const call of calls) {
-        toolsUsed.push(call.function.name);
+      // Concurrently, so two lookups in one round do not run serially while
+      // the caller waits. Order is preserved by Promise.all.
+      const toolStart = Date.now();
 
-        // Arguments arrive as a JSON string; a malformed one must not throw.
-        let args: Record<string, unknown> = {};
-        try {
-          args = JSON.parse(call.function.arguments || "{}");
-        } catch {
-          args = {};
-        }
+      const results = await Promise.all(
+        calls.map(async (call) => {
+          toolsUsed.push(call.function.name);
 
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: JSON.stringify(executeTool(call.function.name, args)),
-        });
-      }
+          // Arguments arrive as a JSON string; a malformed one must not throw.
+          let args: Record<string, unknown> = {};
+          try {
+            args = JSON.parse(call.function.arguments || "{}");
+          } catch {
+            args = {};
+          }
+
+          return {
+            role: "tool" as const,
+            tool_call_id: call.id,
+            content: JSON.stringify(await executeTool(call.function.name, args)),
+          };
+        }),
+      );
+
+      // Elapsed, not summed: the calls above overlapped.
+      toolMs += Date.now() - toolStart;
+
+      messages.push(...results);
       continue;
     }
 
-    return { text: (message?.content ?? "").trim(), toolsUsed };
+    return { text: (message?.content ?? "").trim(), toolsUsed, toolMs };
   }
 
-  return { text: "Sorry, I could not complete that request.", toolsUsed };
+  return { text: "Sorry, I could not complete that request.", toolsUsed, toolMs };
 }
 
 // ---------------------------------------------------------------------------
@@ -262,7 +301,7 @@ export async function runAgent(
   history: ChatTurn[],
   signal?: AbortSignal,
 ): Promise<LlmResult> {
-  const key = keyFor(cfg.llm.provider);
+  const key = keyFor(cfg.llm.provider, "llm");
 
   if (!key) {
     throw new Error(`No API key configured for ${cfg.llm.provider}.`);

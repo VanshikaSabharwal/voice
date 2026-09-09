@@ -8,7 +8,8 @@
  * timings matter as much as the words: on a phone call, latency is a feature.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { callStats, DROPPED_CALL_MS, type StageStats } from "../../lib/call/stats";
 
 type Turn = {
   role: "user" | "assistant";
@@ -18,6 +19,7 @@ type Turn = {
   toolsUsed?: string[];
   sttMs?: number;
   llmMs?: number;
+  toolMs?: number;
   ttsMs?: number;
 };
 
@@ -33,6 +35,78 @@ type Call = {
   turns: Turn[];
   error?: string;
 };
+
+/**
+ * Median and p95 per stage for one call.
+ *
+ * p95 is given equal billing with the median because it is the number a
+ * caller remembers: a call can average well and still stall long enough,
+ * twice, for someone to wonder whether the line is dead.
+ */
+function LatencySummary({ turns }: { turns: Turn[] }) {
+  const stats = useMemo(() => callStats(turns), [turns]);
+
+  if (stats.turns === 0) return null;
+
+  const rows: Array<[string, StageStats | undefined]> = [
+    ["STT", stats.stt],
+    ["LLM", stats.llm],
+    ["TTS", stats.tts],
+    ["Turn", stats.turnTotal],
+  ];
+
+  return (
+    <div className="rounded-lg bg-[var(--surface-muted)] px-3 py-2">
+      <div className="mb-1.5 flex items-baseline justify-between">
+        <span className="text-[10px] font-medium text-[var(--text-muted)]">
+          Latency · {stats.turns} turn{stats.turns === 1 ? "" : "s"}
+        </span>
+
+        {stats.slowTurns > 0 && (
+          <span className="text-[10px] text-[var(--warning)]">
+            {stats.slowTurns} over {DROPPED_CALL_MS / 1000}s
+          </span>
+        )}
+      </div>
+
+      <table className="w-full text-[10px] tabular-nums">
+        <thead>
+          <tr className="text-[var(--text-subtle)]">
+            <th className="w-10 text-left font-normal" />
+            <th className="text-right font-normal">median</th>
+            <th className="text-right font-normal">p95</th>
+            <th className="text-right font-normal">range</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([label, s]) =>
+            s ? (
+              <tr
+                key={label}
+                className={label === "Turn" ? "font-medium" : undefined}
+              >
+                <td className="text-left text-[var(--text-muted)]">{label}</td>
+                <td className="text-right">{s.median}ms</td>
+                <td
+                  className={`text-right ${
+                    label === "Turn" && s.p95 >= DROPPED_CALL_MS
+                      ? "text-[var(--warning)]"
+                      : ""
+                  }`}
+                >
+                  {s.p95}ms
+                </td>
+                <td className="text-right text-[var(--text-subtle)]">
+                  {s.min}–{s.max}
+                </td>
+              </tr>
+            ) : null,
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 function duration(call: Call): string {
   if (!call.endedAt) return "in progress";
@@ -179,6 +253,8 @@ export default function ConversationsPage() {
                       </p>
                     )}
 
+                    <LatencySummary turns={call.turns} />
+
                     {call.turns.length === 0 && (
                       <p className="py-4 text-center text-[11px] text-[var(--text-subtle)]">
                         Nothing was said on this call.
@@ -200,6 +276,7 @@ export default function ConversationsPage() {
                           turn.toolsUsed?.length ||
                           turn.sttMs ||
                           turn.llmMs ||
+                          turn.toolMs ||
                           turn.ttsMs) && (
                           <p
                             className={`mt-1 text-[10px] ${
@@ -214,6 +291,7 @@ export default function ConversationsPage() {
                               : ""}
                             {turn.sttMs ? `stt ${turn.sttMs}ms ` : ""}
                             {turn.llmMs ? `llm ${turn.llmMs}ms ` : ""}
+                            {turn.toolMs ? `tool ${turn.toolMs}ms ` : ""}
                             {turn.ttsMs ? `tts ${turn.ttsMs}ms` : ""}
                           </p>
                         )}
