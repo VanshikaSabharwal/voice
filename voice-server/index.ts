@@ -28,7 +28,13 @@ import * as store from "../lib/store/calls";
 import { getAgentConfig } from "../app/lib/config";
 import { DEFAULT_CONFIG, type AgentConfig } from "../app/lib/types";
 
-const PORT = Number(process.env.VOICE_PORT ?? 3001);
+/*
+ * PORT is what most hosts (Render, Railway, Fly) inject and expect the process
+ * to bind; VOICE_PORT stays as the local-dev name so `npm run dev` is
+ * unchanged. Host wins when both are set, because refusing the assigned port
+ * is how a deploy silently fails its health check.
+ */
+const PORT = Number(process.env.PORT ?? process.env.VOICE_PORT ?? 3001);
 
 // ---------------------------------------------------------------------------
 // Control plane
@@ -319,6 +325,21 @@ async function handleCall(ws: WebSocket, url: URL): Promise<void> {
 
 server.listen(PORT, () => {
   console.log(`voice server listening on :${PORT}`);
-  console.log(`  ws   ws://localhost:${PORT}/ws/call`);
-  console.log(`  http http://localhost:${PORT}/internal/health`);
+
+  /*
+   * Print the externally reachable URL when the host tells us what it is
+   * (Render sets RENDER_EXTERNAL_URL), otherwise localhost. Logging
+   * "localhost" on a deployed box is actively misleading when you are trying
+   * to work out which URL the browser should be pointed at.
+   */
+  const external = process.env.RENDER_EXTERNAL_URL;
+
+  if (external) {
+    const host = external.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    console.log(`  ws   wss://${host}/ws/call`);
+    console.log(`  http ${external.replace(/\/$/, "")}/internal/health`);
+  } else {
+    console.log(`  ws   ws://localhost:${PORT}/ws/call`);
+    console.log(`  http http://localhost:${PORT}/internal/health`);
+  }
 });

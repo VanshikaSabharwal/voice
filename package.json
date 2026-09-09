@@ -20,6 +20,7 @@
     "next": "16.3.4",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "tsx": "^4.23.13",
     "ws": "^8.21.3"
   },
   "devDependencies": {
@@ -32,7 +33,6 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
     "tailwindcss": "^4",
-    "tsx": "^4.23.13",
     "typescript": "^5"
   }
 }
