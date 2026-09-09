@@ -316,7 +316,7 @@ async function save() {
               : "bg-[var(--brand)] text-white hover:bg-[var(--brand-hover)]"
             }`}
         >
-          <SaveIcon className="h-4 w-4" />
+          <SaveIcon className="h-4 w-4 cursor-pointer" />
           {!ready
             ? "Loading…"
             : saved
@@ -338,6 +338,15 @@ async function save() {
 
       {saveError && (
         <p className="mt-3 text-xs text-[var(--danger)]">{saveError}</p>
+      )}
+
+      {/* Why the button is dead, stated on the page rather than in a tooltip.
+          A disabled control with its reason hidden behind hover reads as "the
+          save is broken" — the user cannot act on a message they never see. */}
+      {blocked && blockingError && (
+        <p className="mt-3 text-xs text-[var(--danger)]">
+          Cannot save: {blockingError.message}
+        </p>
       )}
 
       <div className="mt-5">
