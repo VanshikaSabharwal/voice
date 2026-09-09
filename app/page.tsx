@@ -535,7 +535,7 @@ export default function CallTestPage() {
           ) : (
             <button
               onClick={() => void call()}
-              className="rounded-full bg-[var(--brand)] px-6 py-2.5 text-xs font-medium text-white transition hover:bg-[var(--brand-hover)]"
+              className="rounded-full bg-[var(--brand)] px-6 py-2.5 text-xs font-medium text-white transition hover:bg-[var(--brand-hover)] cursor-pointer"
             >
               Call
             </button>

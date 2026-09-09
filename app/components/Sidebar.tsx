@@ -77,7 +77,7 @@ function SidebarFooter({ onNavigate }: { onNavigate: () => void }) {
           <li key={entry.id}>
             <button
               onClick={() => load(entry)}
-              className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition
+              className={`flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition
                 ${activeId === entry.id
                   ? "bg-[var(--brand-soft)] font-medium text-[var(--brand)]"
                   : "text-[var(--text-muted)] hover:bg-[var(--surface-muted)]"

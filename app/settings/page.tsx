@@ -313,10 +313,10 @@ async function save() {
           className={`flex shrink-0 items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition
             ${blocked || !ready
               ? "cursor-not-allowed bg-[var(--border-strong)] text-white/80"
-              : "bg-[var(--brand)] text-white hover:bg-[var(--brand-hover)]"
+              : "cursor-pointer bg-[var(--brand)] text-white hover:bg-[var(--brand-hover)]"
             }`}
         >
-          <SaveIcon className="h-4 w-4 cursor-pointer" />
+          <SaveIcon className="h-4 w-4" />
           {!ready
             ? "Loading…"
             : saved
