@@ -132,6 +132,38 @@ function looksLikeNoise(text: string): boolean {
   return words.every((w) => NOISE_TRANSCRIPTS.has(w));
 }
 
+/**
+ * The opening line for a config, when no explicit greeting was supplied.
+ *
+ * Language-matched, because an English greeting from an agent configured to
+ * speak Hindi is the first thing the caller hears and immediately signals that
+ * something is misconfigured. TTS also mispronounces text it was not given the
+ * right language for.
+ *
+ * Exported and pure so the server can synthesize this ahead of the call and
+ * have it waiting in the TTS cache — computing the string in two places would
+ * mean warming audio the session then does not use.
+ */
+export function defaultGreetingFor(
+  cfg: AgentConfig,
+  direction: CallDirection,
+): string {
+  const name = cfg.name;
+  const outbound = direction === "outbound";
+
+  switch ((cfg.language || "en").split("-")[0]) {
+    case "hi":
+      return outbound
+        ? `नमस्ते, मैं ${name} से बात कर रहा हूँ। मैं आपकी क्या मदद कर सकता हूँ?`
+        : `नमस्ते, आप ${name} पर पहुँचे हैं। मैं आपकी क्या मदद कर सकता हूँ?`;
+
+    default:
+      return outbound
+        ? `Hello, this is ${name} calling. How can I help you today?`
+        : `Hello, you have reached ${name}. How can I help you today?`;
+  }
+}
+
 export class CallSession {
   readonly id: string;
   readonly direction: CallDirection;
@@ -230,29 +262,9 @@ export class CallSession {
     }
   }
 
-  /**
-   * The opening line, when no explicit greeting was supplied.
-   *
-   * Language-matched, because an English greeting from an agent configured to
-   * speak Hindi is the first thing the caller hears and immediately signals
-   * that something is misconfigured. TTS also mispronounces text it was not
-   * given the right language for.
-   */
+  /** The opening line, when no explicit greeting was supplied. */
   private defaultGreeting(): string {
-    const name = this.cfg.name;
-    const outbound = this.direction === "outbound";
-
-    switch ((this.cfg.language || "en").split("-")[0]) {
-      case "hi":
-        return outbound
-          ? `नमस्ते, मैं ${name} से बात कर रहा हूँ। मैं आपकी क्या मदद कर सकता हूँ?`
-          : `नमस्ते, आप ${name} पर पहुँचे हैं। मैं आपकी क्या मदद कर सकता हूँ?`;
-
-      default:
-        return outbound
-          ? `Hello, this is ${name} calling. How can I help you today?`
-          : `Hello, you have reached ${name}. How can I help you today?`;
-    }
+    return defaultGreetingFor(this.cfg, this.direction);
   }
 
   /** Begin the call. Both directions greet first. */

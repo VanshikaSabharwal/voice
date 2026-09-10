@@ -24,9 +24,11 @@ import { BrowserTransport } from "../lib/call/browser-transport";
 import { CallSession, type CallState, type TurnRecord } from "../lib/call/session";
 import * as registry from "../lib/call/registry";
 import { callStats, formatCallStats } from "../lib/call/stats";
+import { warmAll, warmGreeting } from "../lib/agent/warm";
 import * as store from "../lib/store/calls";
 import { getAgentConfig } from "../app/lib/config";
 import { DEFAULT_CONFIG, type AgentConfig } from "../app/lib/types";
+import { PRESETS } from "../app/lib/presets";
 
 /*
  * PORT is what most hosts (Render, Railway, Fly) inject and expect the process
@@ -314,6 +316,11 @@ async function handleCall(ws: WebSocket, url: URL): Promise<void> {
       ` (stt ${config.stt.provider}, llm ${config.llm.provider}, tts ${config.tts.provider})`,
   );
 
+  // Catch the case startup warming cannot: a config saved since boot, or an
+  // outbound call carrying its own greeting. On a hit this returns at once, so
+  // the common path costs nothing.
+  await warmGreeting(config, direction, pending?.greeting);
+
   try {
     await session.start();
   } catch (err) {
@@ -343,4 +350,39 @@ server.listen(PORT, () => {
     console.log(`  ws   ws://localhost:${PORT}/ws/call`);
     console.log(`  http http://localhost:${PORT}/internal/health`);
   }
+
+  // Generate the greeting and fallback lines now, so the first caller does not
+  // pay for them. Deliberately not awaited: the server must accept calls
+  // immediately, and a warm that is still running simply means an early call
+  // synthesizes its own greeting as it always did.
+  void warmStockLines();
 });
+
+/**
+ * Pre-synthesize the lines every call opens with.
+ *
+ * Failures are counted, not thrown: a provider being down or rate limited at
+ * boot must not stop the server serving calls.
+ */
+async function warmStockLines(): Promise<void> {
+  const configs: AgentConfig[] = PRESETS.map((p) => p.config);
+
+  // Whatever an unconfigured call would resolve to, which is usually the one
+  // actually being used during development.
+  try {
+    configs.push(await resolveConfig("default-agent"));
+  } catch {
+    // No saved config; the presets alone are worth warming.
+  }
+
+  const t0 = Date.now();
+  const { warmed, skipped, failed } = await warmAll(configs);
+
+  if (warmed + failed === 0) return;
+
+  console.log(
+    `[warm] ${warmed} line(s) cached in ${((Date.now() - t0) / 1000).toFixed(1)}s` +
+      (skipped ? `, ${skipped} already cached` : "") +
+      (failed ? `, ${failed} failed (will synthesize on demand)` : ""),
+  );
+}

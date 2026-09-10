@@ -25,6 +25,8 @@ import { parseWav, resampleLinear } from "../audio/resample";
 import { FrameSplitter } from "../audio/frames";
 import { cartesiaVoiceId, elevenLabsVoiceId } from "./voices";
 import { TTS_TIMEOUT_MS, withDeadline } from "./deadline";
+import * as cache from "./tts-cache";
+import { cacheKey } from "./tts-cache";
 
 export type TtsStream = AsyncIterable<Uint8Array>;
 
@@ -346,6 +348,11 @@ export function speak(
     );
   }
 
+  const cacheId = cacheKey(cfg, text);
+  const cached = cache.get(cacheId);
+
+  if (cached) return replay(cached, signal);
+
   const source =
     provider === "cartesia"
       ? cartesia(cfg, text, key, signal)
@@ -357,7 +364,48 @@ export function speak(
             ? bodhan(cfg, text, key, signal)
             : elevenLabs(cfg, text, key, signal);
 
-  return frameStream(source);
+  return collecting(cacheId, text, frameStream(source));
+}
+
+/**
+ * Yield cached frames.
+ *
+ * Still honours the abort signal: a cached greeting must be as interruptible
+ * as a generated one, or barge-in would stop working on exactly the lines most
+ * likely to be talked over.
+ */
+async function* replay(
+  frames: Uint8Array[],
+  signal: AbortSignal,
+): AsyncGenerator<Uint8Array> {
+  for (const frame of frames) {
+    if (signal.aborted) return;
+    yield frame;
+  }
+}
+
+/**
+ * Pass frames through, keeping a copy, and cache it only if the stream ends
+ * cleanly.
+ *
+ * The generator simply stops being iterated when a turn is interrupted, so
+ * `return` runs but the loop body does not reach the end — which is why the
+ * commit sits after the loop rather than in a `finally`. Caching a partial
+ * would replay the truncation on every future call.
+ */
+async function* collecting(
+  key: string,
+  text: string,
+  source: AsyncIterable<Uint8Array>,
+): AsyncGenerator<Uint8Array> {
+  const frames: Uint8Array[] = [];
+
+  for await (const frame of source) {
+    frames.push(frame);
+    yield frame;
+  }
+
+  cache.set(key, frames, text);
 }
 
 /** Providers able to produce telephony audio at all. */
