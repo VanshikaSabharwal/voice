@@ -40,6 +40,14 @@ services:
       - key: MONGODB_URL
         sync: false
 
+      # Signs reading-assessment session cookies. The app refuses to start in
+      # production without it, because an unset secret would let any
+      # deployment forge another's sessions. generateValue makes Render
+      # create one and keep it stable across deploys — regenerating it would
+      # sign every user out.
+      - key: SESSION_SECRET
+        generateValue: true
+
       # Provider keys. sync:false = set by hand in the dashboard, never in git.
       - key: GOOGLE_API_KEY
         sync: false

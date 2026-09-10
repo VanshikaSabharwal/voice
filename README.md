@@ -3,7 +3,7 @@
 A telephony voice agent: a continuous phone-style call with real turn-taking
 and interruption, ready to point at Twilio.
 
-The browser page at `/` is a harness standing in for a phone — it speaks the
+The browser page at `/playground` is a harness standing in for a phone — it speaks the
 same 8 kHz mu-law the carrier will, so what you hear locally is what a real
 call sounds like.
 
@@ -61,7 +61,91 @@ npm run dev:next     # UI only
 npm run dev:voice    # voice server only
 ```
 
-Then open <http://localhost:3000>.
+Then open <http://localhost:3000>. You will land on the sign-in page; the
+voice harness lives at `/playground` once you are signed in as an admin.
+
+---
+
+## Reading Assessment
+
+A second application shares this codebase: children read book pages aloud and
+are scored on how accurately they read them.
+
+Sign in at `/login`. On a fresh database an administrator is seeded on the
+first login attempt, and the form is prefilled with it:
+
+| | |
+|---|---|
+| Email | `admin@example.com` |
+| Password | `password` |
+
+**Change that password before deploying anywhere real.**
+
+Three roles, each with one job:
+
+| Role | Can |
+|---|---|
+| Admin | Add books and pages, create assessments, create teacher and student accounts |
+| Teacher | Assign assessments to their own students, see results and marksheets |
+| Student | Read assigned pages aloud, see their report card |
+
+The flow: an admin adds a book and types each page's text, creates an
+assessment over those pages, and creates accounts. A teacher assigns the
+assessment to their students. A child opens the page, reads it aloud, and the
+words light up as they go — green for correct, amber for a misread word, red
+for a skipped one. A page is passed at **90% word accuracy** by default, which
+each assessment can override.
+
+### How the scoring works
+
+Speech is recorded in ~5 second chunks and transcribed through whichever STT
+provider is configured in Settings. The transcript is then aligned against the
+page text with Needleman-Wunsch, which is what makes a skipped word register as
+one omission rather than knocking every later word out of position:
+
+```
+page text:  The  cat  sat  on  the  mat
+transcript: The  cat  sit  on  a   mat
+             ok   ok  SUB  ok  SUB  ok    ->  4/6 = 66.7%
+```
+
+Accuracy is correct words over words *on the page*, so skipping counts against
+a child exactly as much as misreading. Extra words (repeats, self-corrections)
+are reported but kept out of the denominator. Fluency is correct words per
+minute.
+
+The browser runs the same alignment live for feedback, but the score that
+decides whether a page is passed is always recomputed on the server from the
+page text — a client cannot report its own result.
+
+### Environment
+
+| Key | Used for | Notes |
+|---|---|---|
+| `SESSION_SECRET` | Signing session cookies | **Required in production.** `openssl rand -hex 32` |
+| `MONGODB_URL` | Storage | Already used by the voice agent; falls back to `.data/*.json` |
+| `BLOB_READ_WRITE_TOKEN` | Page images | **Required in production.** Without it images go to `public/uploads`, which does not survive a deploy |
+| `READING_STT_PROVIDER` | STT override | Optional. Defaults to the provider chosen in Settings |
+| `READING_STT_MODEL` | STT override | Optional, required alongside the provider |
+| `READING_STT_LANGUAGE` | STT language | Optional. Defaults to `en-IN` |
+
+### Page images
+
+Images go to [Vercel Blob](https://vercel.com/docs/vercel-blob) when
+`BLOB_READ_WRITE_TOKEN` is set, and to `public/uploads` otherwise — so local
+development needs no cloud account, and only the returned URL is ever stored on
+the page record. Neither the database nor the UI knows which backend served it.
+
+Set it up once: **Vercel dashboard → Storage → Create → Blob**, connect it to
+the project, then `vercel env pull` to get the token locally. The store must be
+**public** — these URLs are embedded directly in `<img>` tags.
+
+Uploads are capped at **4 MB**, just under Vercel's 4.5 MB function request
+limit. That limit is enforced by the platform before the handler runs, so a
+larger file would fail as an opaque 413 rather than a message anyone could act
+on; staying under it means the rejection comes with an explanation. If page
+scans ever need to be bigger, Vercel Blob's client-upload flow bypasses the
+function entirely.
 
 ---
 
@@ -124,7 +208,7 @@ Two things worth knowing:
 
 ### 4. A real call — your voice
 
-<http://localhost:3000> → **Call**.
+<http://localhost:3000/playground>.
 
 The agent greets you, then listens. Try talking over it to feel barge-in.
 

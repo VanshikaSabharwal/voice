@@ -14,13 +14,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useConfig } from "./lib/ConfigContext";
-import { decodeMulaw, encodeMulaw, FRAME_BYTES } from "./lib/mulaw-client";
+import { useConfig } from "../lib/ConfigContext";
+import { decodeMulaw, encodeMulaw, FRAME_BYTES } from "../lib/mulaw-client";
 import {
   callStats,
   DROPPED_CALL_MS,
   type StageStats,
-} from "../lib/call/stats";
+} from "../../lib/call/stats";
 
 type CallState =
   | "idle"

@@ -1,12 +1,22 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname } from "next/navigation";
 import Sidebar from "./Sidebar";
 import { MenuIcon, WaveIcon } from "./Icons";
 import { ConfigProvider } from "../lib/ConfigContext";
 import { ConnectionProvider } from "../lib/ConnectionContext";
 
+/** Routes rendered without the application chrome. */
+const BARE_ROUTES = ["/login"];
+
 export default function AppShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+
+  // The sign-in page stands alone: no navigation, and no config/connection
+  // providers, which would fetch agent state for a user who is not signed in.
+  if (BARE_ROUTES.includes(pathname)) return <>{children}</>;
+
   return (
     <ConfigProvider>
       <ConnectionProvider>

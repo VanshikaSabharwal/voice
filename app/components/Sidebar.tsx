@@ -5,17 +5,41 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   ChatIcon, SettingsIcon, WaveIcon, CloseIcon, PlusIcon,
+  BookIcon, UsersIcon, ClipboardIcon, ChartIcon, LogoutIcon,
 } from "./Icons";
 import { useConfig } from "../lib/ConfigContext";
 import { useConnection } from "../lib/ConnectionContext";
 import { PRESETS, type SavedConfig } from "../lib/presets";
 import { DEFAULT_CONFIG } from "../lib/types";
+import { useSession } from "../lib/useSession";
+import type { Role } from "../../lib/reading/types";
 
-const NAV = [
-  { href: "/", label: "Call", Icon: WaveIcon },
-  { href: "/conversations", label: "Conversations", Icon: ChatIcon },
-  { href: "/settings", label: "Settings", Icon: SettingsIcon },
-] as const;
+type NavItem = {
+  href: string;
+  label: string;
+  Icon: (props: { className?: string }) => React.ReactElement;
+};
+
+/**
+ * Navigation per role. This mirrors the rules in proxy.ts — it decides what is
+ * worth showing, never what is permitted; the guards do that.
+ */
+const NAV_BY_ROLE: Record<Role, NavItem[]> = {
+  admin: [
+    { href: "/admin", label: "Overview", Icon: ChartIcon },
+    { href: "/admin/books", label: "Books", Icon: BookIcon },
+    { href: "/admin/assessments", label: "Assessments", Icon: ClipboardIcon },
+    { href: "/admin/users", label: "Teachers & Students", Icon: UsersIcon },
+    { href: "/playground", label: "Voice Playground", Icon: WaveIcon },
+    { href: "/conversations", label: "Conversations", Icon: ChatIcon },
+    { href: "/settings", label: "Settings", Icon: SettingsIcon },
+  ],
+  teacher: [
+    { href: "/teacher", label: "Assign", Icon: ClipboardIcon },
+    { href: "/teacher/results", label: "Results", Icon: ChartIcon },
+  ],
+  student: [{ href: "/student", label: "My Reading", Icon: BookIcon }],
+};
 
 /** Saved configurations, connection status, and the Test Connection action. */
 function SidebarFooter({ onNavigate }: { onNavigate: () => void }) {
@@ -152,6 +176,16 @@ export default function Sidebar({
   onClose: () => void;
 }) {
   const pathname = usePathname();
+  const router = useRouter();
+  const { session } = useSession();
+
+  const nav = session ? NAV_BY_ROLE[session.role] : [];
+
+  async function signOut() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    router.replace("/login");
+    router.refresh();
+  }
 
   return (
     <>
@@ -176,8 +210,10 @@ export default function Sidebar({
               <WaveIcon className="h-5 w-5" />
             </span>
             <span className="leading-tight">
-              <span className="block text-[15px] font-semibold">Voice Agent</span>
-              <span className="block text-[11px] text-[var(--text-subtle)]">Playground</span>
+              <span className="block text-[15px] font-semibold">Reading</span>
+              <span className="block text-[11px] capitalize text-[var(--text-subtle)]">
+                {session ? session.role : "Assessment"}
+              </span>
             </span>
           </div>
           <button
@@ -190,8 +226,13 @@ export default function Sidebar({
         </div>
 
         <nav className="flex-1 space-y-1 overflow-y-auto px-3">
-          {NAV.map(({ href, label, Icon }) => {
-            const active = pathname === href;
+          {nav.map(({ href, label, Icon }) => {
+            /* Exact match for section roots, prefix match for their children,
+               so /admin/books highlights Books and not Overview. */
+            const active =
+              pathname === href ||
+              (href !== "/" && pathname.startsWith(`${href}/`));
+
             return (
               <Link
                 key={href}
@@ -211,7 +252,25 @@ export default function Sidebar({
           })}
         </nav>
 
-        <SidebarFooter onNavigate={onClose} />
+        {/* Voice-agent configuration is an operator concern, and the pages it
+            links to are admin-only in proxy.ts. */}
+        {session?.role === "admin" && <SidebarFooter onNavigate={onClose} />}
+
+        {session && (
+          <div className="border-t border-[var(--border)] p-4">
+            <p className="truncate text-sm font-medium">{session.name}</p>
+            <p className="truncate text-[11px] text-[var(--text-subtle)]">
+              {session.email}
+            </p>
+            <button
+              onClick={signOut}
+              className="mt-3 flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-[var(--border-strong)] px-3 py-2 text-xs font-medium text-[var(--text-muted)] transition hover:bg-[var(--surface-muted)]"
+            >
+              <LogoutIcon className="h-4 w-4" />
+              Sign out
+            </button>
+          </div>
+        )}
       </aside>
     </>
   );

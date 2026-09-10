@@ -42,3 +42,6 @@ next-env.d.ts
 
 # local config store
 .data/
+
+# uploaded page and cover images
+public/uploads/
