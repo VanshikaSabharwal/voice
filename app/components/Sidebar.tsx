@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-  ChatIcon, SettingsIcon, WaveIcon, CloseIcon, PlusIcon,
+  ChatIcon, SettingsIcon, WaveIcon, CloseIcon, PlusIcon, ChartIcon,
 } from "./Icons";
 import { useConfig } from "../lib/ConfigContext";
 import { useConnection } from "../lib/ConnectionContext";
@@ -13,6 +13,7 @@ import { DEFAULT_CONFIG } from "../lib/types";
 
 const NAV = [
   { href: "/", label: "Call", Icon: WaveIcon },
+  { href: "/evaluate", label: "Evaluate", Icon: ChartIcon },
   { href: "/conversations", label: "Conversations", Icon: ChatIcon },
   { href: "/settings", label: "Settings", Icon: SettingsIcon },
 ] as const;

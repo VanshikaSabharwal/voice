@@ -102,3 +102,12 @@ export function TrashIcon({ className = "w-4 h-4" }: IconProps) {
     </svg>
   );
 }
+
+export function ChartIcon({ className = "w-5 h-5" }: IconProps) {
+  return (
+    <svg className={`${base} ${className}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 3v18h18" />
+      <path d="M7 15l4-5 3 3 5-7" />
+    </svg>
+  );
+}

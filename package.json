@@ -12,6 +12,8 @@
     "lint": "eslint",
     "verify:audio": "tsx scripts/verify-audio.ts",
     "verify:tts": "tsx scripts/verify-tts.ts",
+    "verify:wer": "tsx scripts/verify-wer.ts",
+    "verify:eval": "tsx scripts/verify-eval.ts",
     "call": "tsx scripts/fake-caller.ts",
     "ingest": "tsx scripts/ingest-docs.ts",
     "verify:latency": "tsx scripts/verify-latency.ts"

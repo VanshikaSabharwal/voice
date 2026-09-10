@@ -65,6 +65,65 @@ Then open <http://localhost:3000>.
 
 ---
 
+## Evaluation
+
+`/evaluate` compares providers one layer at a time — STT, TTS or LLM in
+isolation — on **latency, quality and cost**. `/evaluate/agent` shows where a
+whole voice-agent turn spends its time.
+
+### Spending
+
+Every component run makes real API calls billed to your own provider accounts,
+so the platform is built so that cannot happen by accident:
+
+- The plan — how many calls, and what they will cost — is shown **before** the
+  Run button, and refreshes on every change. Asking is free.
+- `POST /api/eval/run` refuses without `confirm: true`, so a client that never
+  showed the plan cannot spend anything. A `GET` is a 405: no link, prefetch or
+  address bar can start a run.
+- Nothing retries. A failed provider is reported as failed rather than charged
+  for twice.
+- Repetitions are capped at 10, because cost is linear in that number.
+- `/evaluate/agent` reads recorded call history and costs nothing at all.
+
+Two places where a run costs more than it looks, both stated in the plan:
+evaluating **STT** synthesizes its test utterance first (a billed TTS call),
+and scoring **TTS** quality transcribes the audio back (a billed STT call).
+
+### What quality means
+
+STT is scored by **word error rate** against the reference text — the count of
+substitutions, deletions and insertions needed to reach the transcript, over the
+reference length. The alignment is Needleman-Wunsch rather than a positional
+comparison, because one dropped word shifts every later word and a positional
+diff would report the whole remainder as wrong.
+
+TTS quality is a round trip: synthesize, transcribe the result, and compare to
+what was asked for. It measures intelligibility, not naturalness — a voice can
+be robotic and still score perfectly.
+
+LLM output has no single correct answer, so it carries latency only.
+
+### Cost
+
+`lib/eval/pricing.ts` ships with **no rates filled in**. Vendor pricing changes
+without notice and a stale figure would quietly skew every comparison, so
+unknown is recorded as unknown and the UI shows "—" rather than `$0.00`. Add
+rates from each provider's pricing page along with the date you checked.
+
+### Verifying it
+
+```bash
+npm run verify:wer     # word error rate — pure computation
+npm run verify:eval    # runner logic against stubbed providers
+```
+
+Neither makes a provider call, so both are free to run. What they cannot check
+is whether the live providers behave as their adapters expect — only a real run
+shows that, and a real run costs money.
+
+---
+
 ## Testing
 
 ### 1. Audio primitives — no servers, no keys
