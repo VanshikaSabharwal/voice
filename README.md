@@ -71,8 +71,13 @@ voice harness lives at `/playground` once you are signed in as an admin.
 A second application shares this codebase: children read book pages aloud and
 are scored on how accurately they read them.
 
-Sign in at `/login`. On a fresh database an administrator is seeded on the
-first login attempt, and the form is prefilled with it:
+Sign in at `/login`. Pick a role first — student, teacher or administrator —
+then sign in through that role's form. The role is verified against the
+account, so an administrator's password will not get you in through the
+Teacher door.
+
+On a fresh database an administrator is seeded on the first login attempt, and
+only that form is prefilled:
 
 | | |
 |---|---|
