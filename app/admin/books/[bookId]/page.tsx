@@ -32,6 +32,15 @@ export default function BookPagesPage() {
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  /* The chosen file is kept so its text can be read off it on demand. The
+     stored URL is not enough: extraction posts the bytes, and refetching the
+     image we just uploaded to send it straight back would be a pointless
+     round trip. */
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [instruction, setInstruction] = useState("");
+  const [extracting, setExtracting] = useState(false);
+  const [extractNote, setExtractNote] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     try {
       const [booksRes, pagesRes] = await Promise.all([
@@ -81,6 +90,49 @@ export default function BookPagesPage() {
     }
   }
 
+  /**
+   * Read the page text off the uploaded image.
+   *
+   * Explicit rather than automatic on upload: it is a billed model call, and
+   * an operator who already has the text typed should not pay for one.
+   */
+  async function extract() {
+    if (!imageFile) return;
+
+    setExtracting(true);
+    setError(null);
+    setExtractNote(null);
+
+    try {
+      const form = new FormData();
+      form.append("file", imageFile);
+      if (instruction.trim()) form.append("instruction", instruction.trim());
+
+      const res = await fetch("/api/pages/extract", {
+        method: "POST",
+        body: form,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.error ?? "Could not read text from that image.");
+        return;
+      }
+
+      if (data.text) {
+        setText(data.text);
+        setExtractNote("Check this against the image before adding the page.");
+      } else {
+        setExtractNote(data.message ?? "No text was found in that image.");
+      }
+    } catch {
+      setError("Could not reach the server.");
+    } finally {
+      setExtracting(false);
+    }
+  }
+
   async function addPage(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -102,6 +154,10 @@ export default function BookPagesPage() {
 
       setText("");
       setImageUrl(null);
+      setImageFile(null);
+      setExtractNote(null);
+      // The instruction is kept: consecutive pages of one book usually need
+      // the same guidance, and retyping it each time would be tedious.
       if (fileRef.current) fileRef.current.value = "";
       await load();
     } finally {
@@ -139,23 +195,22 @@ export default function BookPagesPage() {
 
       <Card className="mb-6">
         <form onSubmit={addPage}>
-          <TextArea
-            label={`Page ${pages.length + 1} text`}
-            value={text}
-            onChange={setText}
-            rows={4}
-            placeholder="Type exactly what is printed on this page…"
-            hint={`${wordCount} ${wordCount === 1 ? "word" : "words"} · this is what the child's reading is scored against`}
-          />
+          <p className="mb-1.5 text-xs font-medium text-[var(--text-muted)]">
+            Page {pages.length + 1} image
+          </p>
 
-          <div className="mt-4 flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <input
               ref={fileRef}
               type="file"
               accept="image/png,image/jpeg,image/webp,image/gif"
               onChange={(e) => {
                 const file = e.target.files?.[0];
-                if (file) upload(file);
+                if (!file) return;
+
+                setImageFile(file);
+                setExtractNote(null);
+                upload(file);
               }}
               className="text-xs text-[var(--text-muted)] file:mr-3 file:cursor-pointer file:rounded-lg file:border file:border-[var(--border-strong)] file:bg-white file:px-3 file:py-1.5 file:text-xs"
             />
@@ -177,6 +232,55 @@ export default function BookPagesPage() {
                 Image attached
               </span>
             )}
+          </div>
+
+          {/* Extraction only makes sense once there is an image to read. */}
+          {imageFile && (
+            <div className="mt-3 rounded-lg bg-[var(--surface-muted)] p-3">
+              <label className="block">
+                <span className="mb-1.5 block text-[11px] font-medium text-[var(--text-muted)]">
+                  What should be read from the image?{" "}
+                  <span className="text-[var(--text-subtle)]">optional</span>
+                </span>
+                <input
+                  type="text"
+                  value={instruction}
+                  onChange={(e) => setInstruction(e.target.value)}
+                  placeholder="e.g. only the story text, skip the caption under the picture"
+                  className="w-full rounded-lg border border-[var(--border-strong)] px-3 py-2 text-sm outline-none focus:border-[var(--brand)]"
+                />
+              </label>
+
+              <button
+                type="button"
+                onClick={extract}
+                disabled={extracting || uploading}
+                className="mt-2 cursor-pointer rounded-lg border border-[var(--border-strong)] bg-white px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] transition hover:border-[var(--brand)] hover:text-[var(--brand)] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {extracting ? "Reading the page…" : "Read text from image"}
+              </button>
+
+              <span className="ml-2 text-[11px] text-[var(--text-subtle)]">
+                Fills in the text below. Uses one Gemini call.
+              </span>
+
+              {extractNote && (
+                <p className="mt-2 text-[11px] text-[var(--warning)]">
+                  {extractNote}
+                </p>
+              )}
+            </div>
+          )}
+
+          <div className="mt-4">
+            <TextArea
+              label="Page text"
+              value={text}
+              onChange={setText}
+              rows={4}
+              placeholder="Type what is printed on this page, or read it from the image above…"
+              hint={`${wordCount} ${wordCount === 1 ? "word" : "words"} · this is what the child's reading is scored against, so it cannot be blank`}
+            />
           </div>
 
           <div className="mt-4">

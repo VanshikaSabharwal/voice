@@ -94,7 +94,17 @@ Three roles, each with one job:
 | Teacher | Assign assessments to their own students, see results and marksheets |
 | Student | Read assigned pages aloud, see their report card |
 
-The flow: an admin adds a book and types each page's text, creates an
+Adding a page: upload the page image, then press **Read text from image** to
+pull the words off it — optionally with an instruction such as "only the story
+text, skip the caption". The result is filled into the text box for you to
+correct before saving. Typing the text by hand still works.
+
+The text cannot be blank, image or not: it is what each spoken word is aligned
+against, so a page without it would score 0% however well the child reads.
+Reading text from an image makes one Gemini call and needs `GOOGLE_API_KEY`;
+`READING_OCR_MODEL` overrides the model.
+
+The flow: an admin adds a book and supplies each page's text, creates an
 assessment over those pages, and creates accounts. A teacher assigns the
 assessment to their students. A child opens the page, reads it aloud, and the
 words light up as they go — green for correct, amber for a misread word, red
