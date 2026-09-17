@@ -151,9 +151,11 @@ Images go to [Vercel Blob](https://vercel.com/docs/vercel-blob) when
 development needs no cloud account, and only the returned URL is ever stored on
 the page record. Neither the database nor the UI knows which backend served it.
 
-Set it up once: **Vercel dashboard → Storage → Create → Blob**, connect it to
-the project, then `vercel env pull` to get the token locally. The store must be
-**public** — these URLs are embedded directly in `<img>` tags.
+Set it up once: **Vercel dashboard → Storage → Create → Blob**, choose
+**Public** access (required — these URLs are embedded directly in `<img>`
+tags; a private store will reject uploads), connect it to the project, then
+`vercel env pull` to get the token locally. Ensure Production has
+`BLOB_READ_WRITE_TOKEN` set to that store's token.
 
 Uploads are capped at **4 MB**, just under Vercel's 4.5 MB function request
 limit. That limit is enforced by the platform before the handler runs, so a

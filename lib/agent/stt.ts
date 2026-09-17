@@ -33,11 +33,17 @@ function tag(language: string, fallback: string): string {
   return language.includes("-") ? language : `${language}-IN`;
 }
 
-async function transcribeGemini(input: TranscribeInput, key: string): Promise<string> {
-  // Browser recordings report e.g. "audio/webm;codecs=opus"; Gemini expects
-  // the bare container type.
-  const uploadMimeType = input.mimeType.split(";")[0] || "audio/webm";
+/**
+ * Browser MediaRecorder reports e.g. "audio/webm;codecs=opus". Providers
+ * match against a bare allowlist (`audio/webm`), so the codecs parameter
+ * must be stripped before upload — Sarvam 400s on the full string even
+ * though webm itself is accepted.
+ */
+function bareMimeType(mimeType: string): string {
+  return mimeType.split(";")[0]?.trim() || "audio/webm";
+}
 
+async function transcribeGemini(input: TranscribeInput, key: string): Promise<string> {
   // Send inline rather than via the Files API. Files exists for payloads too
   // large for one request; a voice turn is tens of kilobytes, so inlining
   // removes an entire WAN round trip (upload, then generate) per turn — the
@@ -49,7 +55,7 @@ async function transcribeGemini(input: TranscribeInput, key: string): Promise<st
         parts: [
           {
             inlineData: {
-              mimeType: uploadMimeType,
+              mimeType: bareMimeType(input.mimeType),
               data: input.bytes.toString("base64"),
             },
           },
@@ -114,7 +120,7 @@ async function transcribeSarvam(input: TranscribeInput, key: string): Promise<st
 
   form.append(
     "file",
-    new Blob([new Uint8Array(input.bytes)], { type: input.mimeType }),
+    new Blob([new Uint8Array(input.bytes)], { type: bareMimeType(input.mimeType) }),
     input.filename,
   );
   form.append("model", input.model);
@@ -148,7 +154,7 @@ async function transcribeBodhan(input: TranscribeInput, key: string): Promise<st
 
   form.append(
     "file",
-    new Blob([new Uint8Array(input.bytes)], { type: input.mimeType }),
+    new Blob([new Uint8Array(input.bytes)], { type: bareMimeType(input.mimeType) }),
     input.filename,
   );
   form.append("model", input.model);

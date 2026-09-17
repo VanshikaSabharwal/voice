@@ -61,11 +61,18 @@ export const POST = guarded(async (request: Request) => {
 
     /* Name the actual cause. On the local backend a failed write means a
        read-only or ephemeral filesystem, and the fix is to configure Blob —
-       which is not something a generic "upload failed" would ever suggest. */
+       which is not something a generic "upload failed" would ever suggest.
+       When Blob is configured, surface the SDK message so a public/private
+       store mismatch is actionable instead of a blank 500. */
+    const detail =
+      err instanceof Error && err.message.trim() ? err.message.trim() : null;
+
     return Response.json(
       {
         error: blobEnabled()
-          ? "Could not store the image in Blob storage."
+          ? detail
+            ? `Could not store the image in Blob storage: ${detail}`
+            : "Could not store the image in Blob storage."
           : "Could not store the image — the server's filesystem is not writable. Set BLOB_READ_WRITE_TOKEN to store images in Vercel Blob.",
       },
       { status: 500 },

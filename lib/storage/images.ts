@@ -65,6 +65,12 @@ export async function storeImage(
     // the local-disk fallback.
     const { put } = await import("@vercel/blob");
 
+    // Pass the token explicitly. On Vercel, OIDC + BLOB_STORE_ID otherwise
+    // take precedence and can target a different (often private) store than
+    // the one BLOB_READ_WRITE_TOKEN was issued for — which then rejects
+    // access: "public".
+    const token = process.env.BLOB_READ_WRITE_TOKEN!.trim();
+
     const blob = await put(`reading/${name}`, file, {
       // Public: these URLs go straight into an <img src> on the student and
       // admin pages, so they must be fetchable without a signed request.
@@ -73,6 +79,7 @@ export async function storeImage(
       // make the stored path harder to match against what we generated.
       addRandomSuffix: false,
       contentType: file.type,
+      token,
     });
 
     return { url: blob.url };
