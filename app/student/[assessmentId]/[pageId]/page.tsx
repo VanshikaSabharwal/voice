@@ -10,14 +10,14 @@
  * decides whether the page is passed. The client never reports its own score.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { Banner, Button, Card, Empty } from "../../../components/ui";
 import ReportCard, { Legend } from "../../../components/ReportCard";
 import { MicIcon, SpeakerIcon } from "../../../components/Icons";
-import { useReadingRecorder } from "../../../lib/useReadingRecorder";
-import { alignLive, tokenize } from "../../../../lib/reading/align";
+import { useLiveReadingRecorder } from "../../../lib/useLiveReadingRecorder";
+import { tokenize } from "../../../../lib/reading/align";
 import type { Attempt, WordMark } from "../../../../lib/reading/types";
 
 type PageRow = {
@@ -52,24 +52,8 @@ export default function ReadPage() {
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
 
-  const [transcript, setTranscript] = useState("");
   const [result, setResult] = useState<Attempt | null>(null);
   const [submitting, setSubmitting] = useState(false);
-
-  /* The transcript is also held in a ref: stop() resolves after the last chunk
-     lands, and reading state at that moment would give the value from before
-     the final update. */
-  const transcriptRef = useRef("");
-
-  const appendTranscript = useCallback((text: string) => {
-    transcriptRef.current = `${transcriptRef.current} ${text}`.trim();
-    setTranscript(transcriptRef.current);
-  }, []);
-
-  const recorder = useReadingRecorder({
-    onTranscript: appendTranscript,
-    onError: setWarning,
-  });
 
   useEffect(() => {
     fetch(`/api/reading/assessment?id=${encodeURIComponent(params.assessmentId)}`)
@@ -92,54 +76,23 @@ export default function ReadPage() {
     [page],
   );
 
-  /* Live alignment of what has been heard so far. Uses a forward-only
-     cursor (alignLive) rather than full-page Needleman-Wunsch, which would
-     latch common words onto later lines the child has not reached. */
-  const liveMarks = useMemo(() => {
-    if (!transcript.trim() || pageWords.length === 0) return [];
-    return alignLive(pageWords, tokenize(transcript));
-  }, [pageWords, transcript]);
+  /* Streaming recorder: mic -> recognised partials -> incremental alignment.
+     Words are painted the moment the recogniser's partial reaches the server,
+     and only recogniser-final words are committed (and scored). Falls back to
+     the chunked recorder when streaming is unavailable. */
+  const recorder = useLiveReadingRecorder({
+    pageWords,
+    onError: setWarning,
+  });
 
-  /** Mark per page-word index, for colouring the text as it is read. */
-  const markByIndex = useMemo(() => {
-    const map = new Map<number, WordMark>();
-
-    for (const mark of liveMarks) {
-      if (mark.index >= 0) map.set(mark.index, mark);
-    }
-
-    return map;
-  }, [liveMarks]);
-
-  /* How far the child has read. Trailing omissions are words not yet reached
-     rather than skipped ones, so they must not be shown as errors mid-read. */
-  const reachedUpTo = useMemo(() => {
-    let last = -1;
-
-    for (const mark of liveMarks) {
-      if (mark.index >= 0 && mark.kind !== "omitted") last = mark.index;
-    }
-
-    return last;
-  }, [liveMarks]);
-
-  const liveAccuracy = useMemo(() => {
-    if (reachedUpTo < 0) return 0;
-
-    let correct = 0;
-
-    for (let i = 0; i <= reachedUpTo; i++) {
-      if (markByIndex.get(i)?.kind === "correct") correct++;
-    }
-
-    return Math.round((correct / pageWords.length) * 100);
-  }, [markByIndex, pageWords.length, reachedUpTo]);
-
-  async function finish() {
+      async function finish() {
     setSubmitting(true);
     setWarning(null);
 
-    const durationSec = await recorder.stop();
+    /* Stop() flushes the streaming recogniser and returns the committed
+       transcript — exactly the words that were painted. The server scores
+       this same transcript again, so green and grade agree. */
+    const { transcript, durationSec } = await recorder.stop();
 
     try {
       const res = await fetch("/api/reading/attempts", {
@@ -148,7 +101,7 @@ export default function ReadPage() {
         body: JSON.stringify({
           assessmentId: params.assessmentId,
           pageId: params.pageId,
-          transcript: transcriptRef.current,
+          transcript,
           durationSec,
         }),
       });
@@ -169,8 +122,6 @@ export default function ReadPage() {
   }
 
   function readAgain() {
-    transcriptRef.current = "";
-    setTranscript("");
     setResult(null);
     setWarning(null);
   }
@@ -245,7 +196,7 @@ export default function ReadPage() {
                     Listening
                   </span>
                   <span>{recorder.elapsed}s</span>
-                  {reachedUpTo >= 0 && <span>{liveAccuracy}%</span>}
+                  {recorder.marks.reached > 0 && <span>{recorder.liveAccuracy}%</span>}
                 </span>
               )}
             </div>
@@ -276,8 +227,8 @@ export default function ReadPage() {
                   <span
                     key={i}
                     className={`transition-colors duration-300 ${wordClass(
-                      markByIndex.get(i),
-                      i <= reachedUpTo,
+                      recorder.marks.byIndex.get(i),
+                      i < recorder.marks.reached,
                     )}`}
                   >
                     {word}

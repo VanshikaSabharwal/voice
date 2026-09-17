@@ -75,6 +75,56 @@ export function wordsMatch(expected: string, spoken: string): boolean {
   return numberFormsMatch(a, b);
 }
 
+/** Levenshtein distance — small words, so quadratic is fine. */
+function editDistance(a: string, b: string): number {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const dist: number[] = new Array(cols);
+
+  for (let j = 0; j < cols; j++) dist[j] = j;
+
+  for (let i = 1; i < rows; i++) {
+    let prev = dist[0];
+    dist[0] = i;
+
+    for (let j = 1; j < cols; j++) {
+      const tmp = dist[j];
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dist[j] = Math.min(dist[j] + 1, dist[j - 1] + 1, prev + cost);
+      prev = tmp;
+    }
+  }
+
+  return dist[b.length];
+}
+
+/**
+ * Looser match for live feedback. ASR often truncates ("runnin"), drops a
+ * letter, or returns a close cousin — exact equality would leave a correctly
+ * read word unmarked until the final score.
+ */
+export function wordsClose(expected: string, spoken: string): boolean {
+  if (wordsMatch(expected, spoken)) return true;
+
+  const a = normalize(expected);
+  const b = normalize(spoken);
+
+  if (!a || !b) return false;
+
+  const shorter = Math.min(a.length, b.length);
+  const longer = Math.max(a.length, b.length);
+
+  // Prefix / stem: "running" vs "runnin", "elephant" vs "elephan".
+  if (shorter >= 3 && longer <= shorter + 2 && (a.startsWith(b) || b.startsWith(a))) {
+    return true;
+  }
+
+  if (longer < 4) return false;
+
+  const allowed = longer <= 5 ? 1 : 2;
+  return editDistance(a, b) <= allowed;
+}
+
 type Move = "diag" | "up" | "left";
 
 /**
@@ -188,11 +238,16 @@ export function alignWords(pageWords: string[], spokenWords: string[]): WordMark
 
 /**
  * How far ahead of the reading cursor a spoken word may still count as a
- * skip rather than a substitution. Wider than one word so a missed "the"
- * does not derail the rest of the line; narrow enough that matches cannot
- * jump to a later paragraph the child has not reached.
+ * skip rather than a substitution. Wide enough for a missed "the"/"a";
+ * narrow enough that matches cannot jump to a later paragraph.
  */
-const LIVE_LOOKAHEAD = 3;
+const LIVE_LOOKAHEAD = 5;
+
+/**
+ * After this many unmatched spoken words in a row, force a substitution so a
+ * run of ASR noise cannot leave the cursor stuck forever.
+ */
+const LIVE_FORCE_ADVANCE = 2;
 
 /**
  * Live feedback alignment while the child is still reading.
@@ -201,6 +256,11 @@ const LIVE_LOOKAHEAD = 3;
  * transcript of common words ("the", "and") will latch onto a later line and
  * paint green past where the child has actually got to. This walker stays
  * pinned to a cursor that only moves forward from the start of the page.
+ *
+ * Unmatched spoken words are treated as insertions (noise / filler) rather
+ * than burning the next page word — that was the usual way a correct reading
+ * fell behind the highlight. Near-misses from ASR still count as correct via
+ * wordsClose().
  *
  * Final scoring still uses alignWords() on the complete transcript — that is
  * where global alignment belongs.
@@ -213,6 +273,7 @@ export function alignLive(
 
   const marks: WordMark[] = [];
   let cursor = 0;
+  let unmatchedStreak = 0;
 
   for (const spoken of spokenWords) {
     if (cursor >= pageWords.length) {
@@ -226,15 +287,25 @@ export function alignLive(
     }
 
     let found = -1;
+    let close = false;
 
     for (
       let ahead = 0;
       ahead <= LIVE_LOOKAHEAD && cursor + ahead < pageWords.length;
       ahead++
     ) {
-      if (wordsMatch(pageWords[cursor + ahead], spoken)) {
+      const candidate = pageWords[cursor + ahead];
+
+      if (wordsMatch(candidate, spoken)) {
         found = cursor + ahead;
+        close = false;
         break;
+      }
+
+      if (found < 0 && wordsClose(candidate, spoken)) {
+        found = cursor + ahead;
+        close = true;
+        // Keep scanning for an exact match a little further on.
       }
     }
 
@@ -253,10 +324,19 @@ export function alignLive(
         index: cursor,
         expected: pageWords[cursor],
         spoken,
+        // Near-misses still light green live; the final score uses exact
+        // alignWords and can still mark a true misread.
         kind: "correct",
       });
       cursor++;
-    } else {
+      unmatchedStreak = 0;
+      continue;
+    }
+
+    // No nearby page word fits. Prefer insertion (do not advance) so filler
+    // and ASR glitches do not consume the next real word. After a short
+    // streak, force a substitution to resync.
+    if (unmatchedStreak >= LIVE_FORCE_ADVANCE) {
       marks.push({
         index: cursor,
         expected: pageWords[cursor],
@@ -264,6 +344,15 @@ export function alignLive(
         kind: "substituted",
       });
       cursor++;
+      unmatchedStreak = 0;
+    } else {
+      marks.push({
+        index: -1,
+        expected: "",
+        spoken,
+        kind: "inserted",
+      });
+      unmatchedStreak++;
     }
   }
 

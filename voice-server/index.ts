@@ -7,8 +7,9 @@
  * config; this keeps the audio.
  *
  * Two surfaces:
- *   ws   /ws/call     media, for the browser harness today and Twilio later
- *   http /internal/*  control plane, called by the Next API routes
+ *   ws   /ws/call       media, for the browser harness today and Twilio later
+ *   ws   /ws/live-asr   streaming STT for reading assessment (Gemini Live)
+ *   http /internal/*    control plane, called by the Next API routes
  */
 
 import { loadEnv } from "../lib/env";
@@ -29,6 +30,7 @@ import * as store from "../lib/store/calls";
 import { getAgentConfig } from "../app/lib/config";
 import { DEFAULT_CONFIG, type AgentConfig } from "../app/lib/types";
 import { PRESETS } from "../app/lib/presets";
+import { handleLiveAsr } from "./live-asr";
 
 /*
  * PORT is what most hosts (Render, Railway, Fly) inject and expect the process
@@ -135,14 +137,21 @@ const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
 
-  if (url.pathname !== "/ws/call") {
-    socket.destroy();
+  if (url.pathname === "/ws/call") {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      void handleCall(ws, url);
+    });
     return;
   }
 
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    void handleCall(ws, url);
-  });
+  if (url.pathname === "/ws/live-asr") {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      void handleLiveAsr(ws);
+    });
+    return;
+  }
+
+  socket.destroy();
 });
 
 async function resolveConfig(

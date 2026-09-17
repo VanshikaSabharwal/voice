@@ -143,6 +143,17 @@ page text — a client cannot report its own result.
 | `READING_STT_PROVIDER` | STT override | Optional. Defaults to the provider chosen in Settings |
 | `READING_STT_MODEL` | STT override | Optional, required alongside the provider |
 | `READING_STT_LANGUAGE` | STT language | Optional. Defaults to `en-IN` |
+| `READING_STT_ENV_LIVE` | Env override prefix | `READING_STT_PROVIDER` + `READING_STT_MODEL` together enable streaming |
+| `READING_STT_LIVE_MODEL` | Live-ASR model | Optional. Defaults to the configured model's `-live` sibling |
+| `READING_STT_LIVE_LANGUAGE` | Live-ASR language | Optional. Defaults to the reading language |
+| `READING_STT_LIVE_DISABLED` | Turn streaming off | Set `1` to force the chunked recogniser |
+
+**Live marking requires the Gemini STT provider.** Streaming partials come from
+Gemini Live (`gemini-3.5-transcribe-live`); Sarvam and Bodhan/fusion do not have a
+streaming path, so with those the page falls back to the same chunked
+recognition as before — still scored identically, just word-marking lags a
+little. The voice server (port 3001) proxies the live socket so the API key is
+never exposed to the browser.
 
 ### Page images
 

@@ -13,13 +13,17 @@
  * recording — MediaRecorder's timeslice mode emits fragments that are not
  * independently decodable, so a fragment sent alone transcribes as silence.
  * The recorder is therefore stopped and restarted per chunk.
+ *
+ * Transcription requests run in PARALLEL. Results are still applied in chunk
+ * order so a slow earlier phrase cannot land after a later one and scramble
+ * the live highlight. Serialising the fetch itself was making greens lag by
+ * one full STT round-trip per chunk.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** Seconds per chunk. Short enough that words light up while the child is
- *  still on the same line; long enough that STT still hears a phrase. */
-const CHUNK_SECONDS = 2.5;
+/** Seconds per chunk. Balance: shorter feels live, longer gives STT a phrase. */
+const CHUNK_SECONDS = 1.8;
 
 export type RecorderState = "idle" | "recording" | "finishing";
 
@@ -59,18 +63,50 @@ export function useReadingRecorder({ onTranscript, onError }: Options) {
      would be stale there — the callbacks close over the value at setup. */
   const activeRef = useRef(false);
 
-  /* Transcription requests are queued so chunks are appended in the order they
-     were spoken. Without this, a slow chunk lands after a later fast one and
-     the transcript reads out of order. */
-  const queueRef = useRef<Promise<void>>(Promise.resolve());
+  /* Parallel STT with ordered apply: each chunk gets an index; results land
+     in a sparse map and are drained in sequence as soon as the next gap
+     is filled. */
+  const chunkSeqRef = useRef(0);
+  const nextApplyRef = useRef(0);
+  const pendingTextRef = useRef<Map<number, string>>(new Map());
+  const inFlightRef = useRef(0);
+  const drainWaitersRef = useRef<Array<() => void>>([]);
+
+  const onTranscriptRef = useRef(onTranscript);
+  const onErrorRef = useRef(onError);
+
+  useEffect(() => {
+    onTranscriptRef.current = onTranscript;
+    onErrorRef.current = onError;
+  }, [onTranscript, onError]);
+
+  const flushReady = useCallback(() => {
+    while (pendingTextRef.current.has(nextApplyRef.current)) {
+      const text = pendingTextRef.current.get(nextApplyRef.current) ?? "";
+      pendingTextRef.current.delete(nextApplyRef.current);
+      nextApplyRef.current += 1;
+      if (text) onTranscriptRef.current(text);
+    }
+
+    if (inFlightRef.current === 0 && pendingTextRef.current.size === 0) {
+      const waiters = drainWaitersRef.current;
+      drainWaitersRef.current = [];
+      for (const resolve of waiters) resolve();
+    }
+  }, []);
 
   const send = useCallback(
     (blob: Blob) => {
       if (blob.size < 1024) return;
 
-      queueRef.current = queueRef.current.then(async () => {
+      const seq = chunkSeqRef.current++;
+      inFlightRef.current += 1;
+
+      void (async () => {
         const form = new FormData();
         form.append("audio", blob, "chunk.webm");
+
+        let text = "";
 
         try {
           const res = await fetch("/api/reading/transcribe", {
@@ -84,17 +120,22 @@ export function useReadingRecorder({ onTranscript, onError }: Options) {
             /* Report but keep going: a provider hiccup on one chunk should not
                end the page. The words in it are lost, which the final score
                reflects honestly as omissions. */
-            onError(data.error ?? "Could not transcribe part of the reading.");
-            return;
+            onErrorRef.current(
+              data.error ?? "Could not transcribe part of the reading.",
+            );
+          } else {
+            text = typeof data.text === "string" ? data.text.trim() : "";
           }
-
-          if (data.text) onTranscript(data.text);
         } catch {
-          onError("Lost connection while transcribing.");
+          onErrorRef.current("Lost connection while transcribing.");
+        } finally {
+          pendingTextRef.current.set(seq, text);
+          inFlightRef.current -= 1;
+          flushReady();
         }
-      });
+      })();
     },
-    [onError, onTranscript],
+    [flushReady],
   );
 
   /* The cycle re-enters itself from onstop. Going through a ref rather than
@@ -156,13 +197,18 @@ export function useReadingRecorder({ onTranscript, onError }: Options) {
         },
       });
     } catch {
-      onError("Microphone permission is needed to read aloud.");
+      onErrorRef.current("Microphone permission is needed to read aloud.");
       return;
     }
 
     streamRef.current = stream;
     activeRef.current = true;
     startedAtRef.current = Date.now();
+    chunkSeqRef.current = 0;
+    nextApplyRef.current = 0;
+    pendingTextRef.current.clear();
+    inFlightRef.current = 0;
+    drainWaitersRef.current = [];
 
     setElapsed(0);
     setState("recording");
@@ -172,12 +218,12 @@ export function useReadingRecorder({ onTranscript, onError }: Options) {
     }, 1000);
 
     runCycle();
-  }, [onError, runCycle]);
+  }, [runCycle]);
 
   /**
    * Stop recording and resolve once every chunk has been transcribed.
    *
-   * Awaiting the queue is what makes the final score complete: submitting
+   * Awaiting in-flight work is what makes the final score complete: submitting
    * immediately would score the page without its last few seconds.
    */
   const stop = useCallback(async (): Promise<number> => {
@@ -198,7 +244,7 @@ export function useReadingRecorder({ onTranscript, onError }: Options) {
 
     const recorder = recorderRef.current;
 
-    // Wait for the final chunk to be handed to the queue by onstop.
+    // Wait for the final chunk to be handed off by onstop.
     if (recorder && recorder.state === "recording") {
       await new Promise<void>((resolve) => {
         recorder.addEventListener("stop", () => resolve(), { once: true });
@@ -206,7 +252,12 @@ export function useReadingRecorder({ onTranscript, onError }: Options) {
       });
     }
 
-    await queueRef.current;
+    if (inFlightRef.current > 0 || pendingTextRef.current.size > 0) {
+      await new Promise<void>((resolve) => {
+        drainWaitersRef.current.push(resolve);
+        flushReady();
+      });
+    }
 
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
@@ -215,7 +266,7 @@ export function useReadingRecorder({ onTranscript, onError }: Options) {
     setState("idle");
 
     return Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000));
-  }, []);
+  }, [flushReady]);
 
   // Releasing the microphone on unmount matters: the browser's recording
   // indicator otherwise stays lit after the child navigates away.
