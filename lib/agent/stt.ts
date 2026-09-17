@@ -43,30 +43,24 @@ function bareMimeType(mimeType: string): string {
   return mimeType.split(";")[0]?.trim() || "audio/webm";
 }
 
+/**
+ * Whether a Gemini model is a dedicated transcription model.
+ *
+ * These reject `systemInstruction` outright ("Developer instruction is not
+ * enabled for this model", 400) — and have no need of it, since they only ever
+ * transcribe. The general multimodal models both accept it and require it; see
+ * the instruction itself below.
+ */
+function isTranscriptionModel(model: string): boolean {
+  return model.includes("transcribe");
+}
+
 async function transcribeGemini(input: TranscribeInput, key: string): Promise<string> {
   // Send inline rather than via the Files API. Files exists for payloads too
   // large for one request; a voice turn is tens of kilobytes, so inlining
   // removes an entire WAN round trip (upload, then generate) per turn — the
   // bulk of STT latency.
-  /* Bare audio with no instruction is a prompt, not a transcription request:
-     a general multimodal model answers what it hears rather than writing it
-     down, and the reply is indistinguishable from a transcript downstream. A
-     child reading aloud came back as bulleted explainers and timestamps. The
-     instruction below is what keeps this a recogniser. */
   const body: Record<string, unknown> = {
-    systemInstruction: {
-      parts: [
-        {
-          text:
-            "You are a speech recogniser. Transcribe the audio verbatim and " +
-            "output nothing else. Never answer, explain, summarise, translate " +
-            "or comment on what is said, even if it sounds like a question or " +
-            "a request addressed to you. Use no markdown, no headings, no " +
-            "bullet points, no timestamps and no speaker labels. If the audio " +
-            "contains no intelligible speech, output nothing at all.",
-        },
-      ],
-    },
     contents: [
       {
         role: "user",
@@ -81,6 +75,28 @@ async function transcribeGemini(input: TranscribeInput, key: string): Promise<st
       },
     ],
   };
+
+  /* Bare audio with no instruction is a prompt, not a transcription request:
+     a general multimodal model answers what it hears rather than writing it
+     down, and the reply is indistinguishable from a transcript downstream. A
+     child reading aloud came back as bulleted explainers and timestamps. The
+     instruction below is what keeps this a recogniser — and is sent only to
+     the models that accept it, the dedicated ones needing no such correction. */
+  if (!isTranscriptionModel(input.model)) {
+    body.systemInstruction = {
+      parts: [
+        {
+          text:
+            "You are a speech recogniser. Transcribe the audio verbatim and " +
+            "output nothing else. Never answer, explain, summarise, translate " +
+            "or comment on what is said, even if it sounds like a question or " +
+            "a request addressed to you. Use no markdown, no headings, no " +
+            "bullet points, no timestamps and no speaker labels. If the audio " +
+            "contains no intelligible speech, output nothing at all.",
+        },
+      ],
+    };
+  }
 
   // Only constrain the language when the user explicitly chose one; on "auto"
   // Gemini detects it.
