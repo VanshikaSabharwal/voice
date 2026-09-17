@@ -145,3 +145,17 @@ input[type="range"]::-moz-range-thumb {
   animation: bar-pulse 1s ease-in-out infinite;
   transform-origin: center;
 }
+
+/* Listening speaker: sound arcs pulse outward while the child is reading. */
+@keyframes speaker-wave {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+
+.speaker-wave {
+  animation: speaker-wave 1.1s ease-in-out infinite;
+}
+
+.speaker-wave-2 {
+  animation-delay: 0.35s;
+}

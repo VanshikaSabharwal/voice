@@ -185,3 +185,87 @@ export function alignWords(pageWords: string[], spokenWords: string[]): WordMark
   // Traceback walks backwards from the end of both sequences.
   return marks.reverse();
 }
+
+/**
+ * How far ahead of the reading cursor a spoken word may still count as a
+ * skip rather than a substitution. Wider than one word so a missed "the"
+ * does not derail the rest of the line; narrow enough that matches cannot
+ * jump to a later paragraph the child has not reached.
+ */
+const LIVE_LOOKAHEAD = 3;
+
+/**
+ * Live feedback alignment while the child is still reading.
+ *
+ * Full Needleman-Wunsch against the whole page is wrong mid-read: a short
+ * transcript of common words ("the", "and") will latch onto a later line and
+ * paint green past where the child has actually got to. This walker stays
+ * pinned to a cursor that only moves forward from the start of the page.
+ *
+ * Final scoring still uses alignWords() on the complete transcript — that is
+ * where global alignment belongs.
+ */
+export function alignLive(
+  pageWords: string[],
+  spokenWords: string[],
+): WordMark[] {
+  if (spokenWords.length === 0 || pageWords.length === 0) return [];
+
+  const marks: WordMark[] = [];
+  let cursor = 0;
+
+  for (const spoken of spokenWords) {
+    if (cursor >= pageWords.length) {
+      marks.push({
+        index: -1,
+        expected: "",
+        spoken,
+        kind: "inserted",
+      });
+      continue;
+    }
+
+    let found = -1;
+
+    for (
+      let ahead = 0;
+      ahead <= LIVE_LOOKAHEAD && cursor + ahead < pageWords.length;
+      ahead++
+    ) {
+      if (wordsMatch(pageWords[cursor + ahead], spoken)) {
+        found = cursor + ahead;
+        break;
+      }
+    }
+
+    if (found >= 0) {
+      while (cursor < found) {
+        marks.push({
+          index: cursor,
+          expected: pageWords[cursor],
+          spoken: "",
+          kind: "omitted",
+        });
+        cursor++;
+      }
+
+      marks.push({
+        index: cursor,
+        expected: pageWords[cursor],
+        spoken,
+        kind: "correct",
+      });
+      cursor++;
+    } else {
+      marks.push({
+        index: cursor,
+        expected: pageWords[cursor],
+        spoken,
+        kind: "substituted",
+      });
+      cursor++;
+    }
+  }
+
+  return marks;
+}

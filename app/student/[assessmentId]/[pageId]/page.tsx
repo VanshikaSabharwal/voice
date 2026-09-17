@@ -15,9 +15,9 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { Banner, Button, Card, Empty } from "../../../components/ui";
 import ReportCard, { Legend } from "../../../components/ReportCard";
-import { MicIcon } from "../../../components/Icons";
+import { MicIcon, SpeakerIcon } from "../../../components/Icons";
 import { useReadingRecorder } from "../../../lib/useReadingRecorder";
-import { alignWords, tokenize } from "../../../../lib/reading/align";
+import { alignLive, tokenize } from "../../../../lib/reading/align";
 import type { Attempt, WordMark } from "../../../../lib/reading/types";
 
 type PageRow = {
@@ -92,11 +92,12 @@ export default function ReadPage() {
     [page],
   );
 
-  /* Live alignment of what has been heard so far. Recomputed per chunk, which
-     is a few hundred words at most — cheap enough to do directly. */
+  /* Live alignment of what has been heard so far. Uses a forward-only
+     cursor (alignLive) rather than full-page Needleman-Wunsch, which would
+     latch common words onto later lines the child has not reached. */
   const liveMarks = useMemo(() => {
     if (!transcript.trim() || pageWords.length === 0) return [];
-    return alignWords(pageWords, tokenize(transcript));
+    return alignLive(pageWords, tokenize(transcript));
   }, [pageWords, transcript]);
 
   /** Mark per page-word index, for colouring the text as it is read. */
@@ -259,19 +260,31 @@ export default function ReadPage() {
             )}
 
             {/* Large type: this is what a child actually reads from. */}
-            <p className="flex flex-wrap gap-x-2 gap-y-1 text-xl leading-relaxed">
-              {pageWords.map((word, i) => (
+            <div className="relative">
+              {recording && (
                 <span
-                  key={i}
-                  className={`transition-colors ${wordClass(
-                    markByIndex.get(i),
-                    i <= reachedUpTo,
-                  )}`}
+                  className="absolute -left-1 -top-1 inline-flex rounded-full bg-[var(--brand-soft)] p-1.5 text-[var(--brand)] sm:-left-10"
+                  title="Listening"
+                  aria-hidden="true"
                 >
-                  {word}
+                  <SpeakerIcon className="h-5 w-5" />
                 </span>
-              ))}
-            </p>
+              )}
+
+              <p className="flex flex-wrap gap-x-2 gap-y-1 text-xl leading-relaxed">
+                {pageWords.map((word, i) => (
+                  <span
+                    key={i}
+                    className={`transition-colors duration-300 ${wordClass(
+                      markByIndex.get(i),
+                      i <= reachedUpTo,
+                    )}`}
+                  >
+                    {word}
+                  </span>
+                ))}
+              </p>
+            </div>
 
             {recording && (
               <div className="mt-4">

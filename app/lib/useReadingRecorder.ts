@@ -17,8 +17,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** Seconds per chunk. Long enough for context, short enough to feel live. */
-const CHUNK_SECONDS = 5;
+/** Seconds per chunk. Short enough that words light up while the child is
+ *  still on the same line; long enough that STT still hears a phrase. */
+const CHUNK_SECONDS = 2.5;
 
 export type RecorderState = "idle" | "recording" | "finishing";
 

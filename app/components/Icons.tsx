@@ -59,6 +59,26 @@ export function MicIcon({ className = "w-5 h-5" }: IconProps) {
   );
 }
 
+/** Speaker cone — pair with `.speaker-wave` children for a listening pulse. */
+export function SpeakerIcon({ className = "w-5 h-5" }: IconProps) {
+  return (
+    <svg
+      className={`${base} ${className}`}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M11 5 6 9H3v6h3l5 4V5z" />
+      <path className="speaker-wave speaker-wave-1" d="M15.5 9.5a3.5 3.5 0 0 1 0 5" />
+      <path className="speaker-wave speaker-wave-2" d="M18 7a6 6 0 0 1 0 10" />
+    </svg>
+  );
+}
+
 
 
 
