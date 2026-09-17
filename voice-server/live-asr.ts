@@ -11,6 +11,13 @@
  *   serverContent.interimInputTranscription   low-latency partial hypothesis
  *   serverContent.inputTranscription          authoritative final segment
  *
+ * This is a TRANSCRIPTION-ONLY session. A Live session that requests a response
+ * modality also *answers* what it hears: a child reading the letter "D" got
+ * back a bulleted explainer about vitamins and Roman numerals, which the
+ * aligner then scored as words the child had spoken. So no responseModalities
+ * is requested, and modelTurn text is discarded rather than forwarded — only
+ * input transcription ever reaches the aligner.
+ *
  * Binary frames from the browser are audio (Int16 PCM16 at 16 kHz, little
  * endian). Text frames are JSON control messages:
  *   { type: "end" }   flush any pending partial and finish
@@ -26,8 +33,15 @@ const LIVE_HOST =
 /** BCP-47 the reading path defaults to English (India). */
 const DEFAULT_LANGUAGE = "en-IN";
 
-/** How long a forced flush may wait for the last final segment. */
-const FLUSH_TIMEOUT_MS = 4000;
+/**
+ * How long a forced flush may wait for the last final segment.
+ *
+ * Must stay below the client's own stop timeout (STOP_TIMEOUT_MS, 4500ms) so
+ * the server is the one that decides the flush is over: if the client gave up
+ * first it would read the transcript without the last segment, losing the
+ * closing words of the page.
+ */
+const FLUSH_TIMEOUT_MS = 3500;
 
 /** How long the setup handshake may take before we give up. */
 const SETUP_TIMEOUT_MS = 10000;
@@ -87,12 +101,16 @@ export async function handleLiveAsr(
 
   gemini = new WebSocket(`${LIVE_HOST}?key=${encodeURIComponent(key)}`);
 
+  console.log(`[live-asr] session opening: model=${model} language=${language}`);
+
   gemini.on("open", () => {
+    /* No responseModalities: we want a recogniser, not an interlocutor. See
+       the file header — requesting TEXT makes the model reply to the reading
+       and those replies are indistinguishable from transcript downstream. */
     gemini?.send(
       JSON.stringify({
         setup: {
           model: `models/${model}`,
-          generationConfig: { responseModalities: ["TEXT"] },
           inputAudioTranscription: { languageCodes: [language] },
         },
       }),
@@ -115,6 +133,8 @@ export async function handleLiveAsr(
       serverContent?: {
         interimInputTranscription?: { text?: string };
         inputTranscription?: { text?: string };
+        /* Model-generated speech. Never forwarded: it is not the child. */
+        modelTurn?: { parts?: { text?: string }[] };
       };
       error?: { message?: string; status?: string };
     };
@@ -127,8 +147,22 @@ export async function handleLiveAsr(
 
     if (message.setupComplete) {
       if (setupTimer) clearTimeout(setupTimer);
+      console.log(`[live-asr] setup acknowledged for model=${model}`);
       client.send(JSON.stringify({ type: "ready", model, language }));
       return;
+    }
+
+    /* If the upstream is still generating despite the setup above, that is a
+       misconfiguration worth seeing in logs — but it must never be scored. */
+    const generated = message.serverContent?.modelTurn?.parts
+      ?.map((part) => part.text)
+      .filter(Boolean)
+      .join(" ");
+
+    if (generated) {
+      console.warn(
+        `[live-asr] discarded model-generated text (model=${model}): ${generated.slice(0, 120)}`,
+      );
     }
 
     const interim = message.serverContent?.interimInputTranscription?.text;

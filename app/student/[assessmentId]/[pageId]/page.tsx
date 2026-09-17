@@ -92,7 +92,13 @@ export default function ReadPage() {
     /* Stop() flushes the streaming recogniser and returns the committed
        transcript — exactly the words that were painted. The server scores
        this same transcript again, so green and grade agree. */
-    const { transcript, durationSec } = await recorder.stop();
+    const { transcript, durationSec, recovered } = await recorder.stop();
+
+    if (recovered > 0) {
+      console.info(
+        `[reading] recovered ${recovered} word(s) the recogniser dropped from its finals`,
+      );
+    }
 
     try {
       const res = await fetch("/api/reading/attempts", {
@@ -151,6 +157,7 @@ export default function ReadPage() {
   }
 
   const recording = recorder.state === "recording";
+  const connecting = recorder.state === "connecting";
 
   return (
     <div className="mx-auto max-w-3xl p-6">
@@ -185,20 +192,65 @@ export default function ReadPage() {
         </>
       ) : (
         <>
+          {/* Start sits above the page text: a child taps it, then looks down
+              and begins. The stop control is below the text, where their eyes
+              land when they reach the end. */}
+          {!recording && (
+            <div className="mb-4">
+              <Button
+                onClick={recorder.start}
+                disabled={connecting || recorder.state === "finishing" || submitting}
+              >
+                <span className="flex items-center gap-2">
+                  {connecting ? (
+                    <>
+                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                      Getting ready…
+                    </>
+                  ) : (
+                    <>
+                      <MicIcon className="h-4 w-4" />
+                      Start listening
+                    </>
+                  )}
+                </span>
+              </Button>
+
+              {connecting && (
+                <p className="mt-2 text-[11px] text-[var(--text-subtle)]">
+                  Just a moment — wait until it says <strong>Speak now</strong>.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* The moment capture is genuinely live. Until this appears, nothing
+              a child says is being recorded. */}
+          {recording && (
+            <div
+              role="status"
+              aria-live="assertive"
+              className="mb-4 flex items-center gap-3 rounded-lg border border-[var(--success)] bg-[var(--success-soft)] px-4 py-3"
+            >
+              <span className="relative flex h-3 w-3">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--success)] opacity-60" />
+                <span className="relative inline-flex h-3 w-3 rounded-full bg-[var(--success)]" />
+              </span>
+              <span className="text-base font-semibold text-[var(--success)]">
+                Speak now
+              </span>
+              <span className="ml-auto flex items-center gap-3 text-[11px] text-[var(--text-muted)]">
+                <span>{recorder.elapsed}s</span>
+                {recorder.marks.reached > 0 && <span>{recorder.liveAccuracy}%</span>}
+              </span>
+            </div>
+          )}
+
           <Card>
+            {/* Elapsed and accuracy live in the "Speak now" banner above, so
+                they are not repeated here. */}
             <div className="mb-4 flex items-center justify-between gap-3">
               <span className="text-sm font-medium">Page {page.number}</span>
-
-              {recording && (
-                <span className="flex items-center gap-3 text-[11px] text-[var(--text-muted)]">
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--danger)]" />
-                    Listening
-                  </span>
-                  <span>{recorder.elapsed}s</span>
-                  {recorder.marks.reached > 0 && <span>{recorder.liveAccuracy}%</span>}
-                </span>
-              )}
             </div>
 
             {page.imageUrl && (
@@ -244,20 +296,12 @@ export default function ReadPage() {
             )}
           </Card>
 
+          {/* Stop sits below the text: it is where a child's eyes already are
+              when they finish the last line. */}
           <div className="mt-4 flex flex-wrap items-center gap-3">
-            {!recording ? (
-              <Button
-                onClick={recorder.start}
-                disabled={recorder.state === "finishing" || submitting}
-              >
-                <span className="flex items-center gap-2">
-                  <MicIcon className="h-4 w-4" />
-                  Start reading
-                </span>
-              </Button>
-            ) : (
-              <Button onClick={finish} disabled={submitting}>
-                {submitting ? "Scoring…" : "I've finished"}
+            {recording && (
+              <Button onClick={finish} disabled={submitting} variant="danger">
+                {submitting ? "Scoring…" : "Stop listening"}
               </Button>
             )}
 
@@ -268,7 +312,7 @@ export default function ReadPage() {
             )}
           </div>
 
-          {!recording && !submitting && (
+          {!recording && !connecting && !submitting && (
             <p className="mt-3 text-[11px] text-[var(--text-subtle)]">
               Read the page out loud, clearly and at your own pace. Pass at{" "}
               {passThreshold}% of the words read correctly.

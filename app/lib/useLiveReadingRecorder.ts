@@ -26,7 +26,15 @@ import { alignLive, tokenize } from "../../lib/reading/align";
 import type { LiveMarks } from "../../lib/reading/live-align";
 import type { MarkKind, WordMark } from "../../lib/reading/types";
 
-export type LiveRecorderState = "idle" | "recording" | "finishing";
+/**
+ * "connecting" is its own state so the page can tell a child not to speak yet.
+ *
+ * Getting from a tap to a live recogniser takes a mic permission, a worklet
+ * load, a websocket and an upstream handshake — often a second or more. Before
+ * this state existed the page said "Listening" throughout, and the opening
+ * words of a page went into a pipe that was not connected yet.
+ */
+export type LiveRecorderState = "idle" | "connecting" | "recording" | "finishing";
 
 type Options = {
   pageWords: string[];
@@ -149,6 +157,16 @@ export function useLiveReadingRecorder({ pageWords, onError }: Options) {
   const stopResolveRef = useRef<(() => void) | null>(null);
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  /* Audio captured before the socket was ready. Flushed upstream on "ready" so
+     a child who starts reading early is not transcribed from midway through
+     their first sentence. Bounded so a stalled handshake cannot grow it
+     without limit — ~10s at 100ms per chunk. */
+  const pendingAudioRef = useRef<Int16Array[]>([]);
+  const PENDING_AUDIO_MAX_CHUNKS = 100;
+
+  /* When the mic actually started, as opposed to when the socket was ready. */
+  const captureStartedAtRef = useRef(0);
+
   const teardownLive = useCallback((bufferForNext: boolean): void => {
     if (tickRef.current) {
       clearInterval(tickRef.current);
@@ -177,6 +195,7 @@ export function useLiveReadingRecorder({ pageWords, onError }: Options) {
     }
     wsRef.current = null;
     liveReadyRef.current = false;
+    pendingAudioRef.current = [];
 
     if (bufferForNext) activeRef.current = false;
   }, []);
@@ -203,12 +222,45 @@ export function useLiveReadingRecorder({ pageWords, onError }: Options) {
 
     streamRef.current = stream;
 
+    let ctx: AudioContext;
+
     try {
-      const ctx = new AudioContext();
+      ctx = new AudioContext();
       audioCtxRef.current = ctx;
       await ctx.audioWorklet.addModule("/live-capture-worklet.js");
     } catch {
       onErrorRef.current("Could not load the audio worklet.");
+      teardownLive(true);
+      return "fail";
+    }
+
+    /* Start capturing NOW, before the socket exists. Anything spoken during
+       the handshake is buffered and flushed on "ready" rather than dropped —
+       the opening words of a page are exactly the ones a child says soonest
+       after tapping. */
+    pendingAudioRef.current = [];
+    captureStartedAtRef.current = Date.now();
+
+    try {
+      await ctx.resume();
+
+      const capture = new AudioWorkletNode(ctx, "live-capture-processor");
+      ctx.createMediaStreamSource(stream).connect(capture);
+
+      capture.port.onmessage = (ev: MessageEvent<Int16Array>) => {
+        const ws = wsRef.current;
+
+        if (liveReadyRef.current && ws?.readyState === WebSocket.OPEN) {
+          ws.send(ev.data);
+          return;
+        }
+
+        if (pendingAudioRef.current.length < PENDING_AUDIO_MAX_CHUNKS) {
+          pendingAudioRef.current.push(ev.data);
+        }
+      };
+    } catch {
+      onErrorRef.current("Could not start capturing audio.");
       teardownLive(true);
       return "fail";
     }
@@ -248,27 +300,23 @@ export function useLiveReadingRecorder({ pageWords, onError }: Options) {
         }
 
         if (msg.type === "ready") {
-          const ctx = audioCtxRef.current;
-          const stream = streamRef.current;
+          /* Capture is already running (started before this socket existed).
+             Flush whatever the child said during the handshake, in order, then
+             let the worklet send directly from here on. */
+          const buffered = pendingAudioRef.current;
+          pendingAudioRef.current = [];
 
-          if (!ctx || !stream) {
-            settle("fail");
-            return;
+          for (const chunk of buffered) {
+            if (ws.readyState === WebSocket.OPEN) ws.send(chunk);
           }
-
-          void ctx.resume();
-
-          const capture = new AudioWorkletNode(ctx, "live-capture-processor");
-          ctx.createMediaStreamSource(stream).connect(capture);
-
-          capture.port.onmessage = (ev: MessageEvent<Int16Array>) => {
-            if (ws.readyState === WebSocket.OPEN) ws.send(ev.data);
-          };
 
           liveReadyRef.current = true;
           setLiveActive(true);
           setState("recording");
-          startedAtRef.current = Date.now();
+
+          /* Time the reading from the first captured audio, not from "ready" —
+             the buffered words are part of the reading and count toward wpm. */
+          startedAtRef.current = captureStartedAtRef.current || Date.now();
           activeRef.current = true;
 
           tickRef.current = setInterval(() => {
@@ -337,6 +385,11 @@ export function useLiveReadingRecorder({ pageWords, onError }: Options) {
     setElapsed(0);
     setMarks(emptyMarks());
 
+    /* Say "getting ready" until capture is genuinely live, so the page can
+       hold the child back rather than inviting them to read into a mic that
+       is not connected yet. */
+    setState("connecting");
+
     /* Decide live vs fallback. A still-undetermined probe (null) is treated
        as try-live; if the provider has no streaming path the server rejects
        the session and we fall back below. */
@@ -387,9 +440,13 @@ export function useLiveReadingRecorder({ pageWords, onError }: Options) {
 
   /* --- Stop --------------------------------------------------------------- */
 
-  const stop = useCallback(async (): Promise<{ transcript: string; durationSec: number }> => {
+  const stop = useCallback(async (): Promise<{
+    transcript: string;
+    durationSec: number;
+    recovered: number;
+  }> => {
     if (!activeRef.current) {
-      return { transcript: "", durationSec: 0 };
+      return { transcript: "", durationSec: 0, recovered: 0 };
     }
 
     activeRef.current = false;
@@ -433,6 +490,16 @@ export function useLiveReadingRecorder({ pageWords, onError }: Options) {
       await fallback.stop();
     }
 
+    /* Before reading the transcript, give words the recogniser dropped from
+       its finals a second chance against the interims it emitted. This only
+       rescues words that were actually heard, so it cannot invent a reading. */
+    let recovered = 0;
+
+    if (mode !== "fallback") {
+      recovered = alignerRef.current.recoverFromInterims();
+      if (recovered > 0) setMarks(alignerRef.current.snapshot());
+    }
+
     /* The transcript scored comes from whichever path actually ran: the
        committed words when streaming, the accumulated chunks otherwise. */
     const transcript =
@@ -440,7 +507,7 @@ export function useLiveReadingRecorder({ pageWords, onError }: Options) {
         ? legacyTranscriptRef.current.trim()
         : alignerRef.current.transcript();
 
-    return { transcript, durationSec };
+    return { transcript, durationSec, recovered };
   }, [fallback, mode, teardownLive]);
 
   /* Release the microphone on unmount, like the chunked recorder does. */
