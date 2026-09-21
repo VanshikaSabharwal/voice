@@ -58,6 +58,91 @@ const LIVE_RESYNC_CONFIRM = 2;
 /** After this many unmatched spoken words, force a substitution to resync. */
 const LIVE_FORCE_ADVANCE = 2;
 
+/**
+ * Longest repeated run a segment boundary may re-emit.
+ *
+ * Bounded so a genuine repetition — a page that really does say "very, very
+ * slowly" — cannot be swallowed whole as overlap.
+ */
+const LIVE_MAX_OVERLAP = 4;
+
+/**
+ * How many of a final's leading words merely repeat what is already committed.
+ *
+ * The recogniser draws segment boundaries wherever it likes, and re-emits the
+ * words either side of the cut: "...getting up" then "up and picking". Feeding
+ * that "up" through the walker again makes it an unmatched word, and after
+ * LIVE_FORCE_ADVANCE of those the cursor stalls — every later word on the page
+ * then goes unmarked, however well it was read.
+ *
+ * Compares with wordsMatch rather than equality: a final re-cases and
+ * re-punctuates its overlap ("up" -> "Up,"), which a raw === misses entirely.
+ */
+function overlapWith(committed: string[], words: string[]): number {
+  const most = Math.min(LIVE_MAX_OVERLAP, committed.length, words.length);
+
+  /* Longest first: a two-word overlap also matches at length one, and taking
+     the short answer would leave the second duplicate to stall the cursor. */
+  for (let n = most; n >= 1; n--) {
+    let same = true;
+
+    for (let i = 0; i < n; i++) {
+      if (!wordsMatch(committed[committed.length - n + i], words[i])) {
+        same = false;
+        break;
+      }
+    }
+
+    if (same) return n;
+  }
+
+  return 0;
+}
+
+/**
+ * Longest run of consecutive omissions that may still be recovered.
+ *
+ * A handful of dropped function words is the recogniser faltering; a dozen in
+ * a row is a line the child skipped, and must stay omitted however many
+ * interims happen to mention those words elsewhere on the page.
+ */
+const LIVE_MAX_RECOVERABLE_RUN = 4;
+
+/**
+ * Was the run of omissions containing `index` read on both sides?
+ *
+ * Walks out to the ends of the run and checks that a word was actually read
+ * either side of it. A run that reaches the start or the end of the page is
+ * bracketed by that edge: a page opening with a word the recogniser missed has
+ * nothing before it to have been read.
+ */
+function runIsBracketed(
+  byIndex: ReadonlyMap<number, WordMark>,
+  index: number,
+): boolean {
+  const omitted = (i: number): boolean => byIndex.get(i)?.kind === "omitted";
+
+  let first = index;
+  while (omitted(first - 1)) first--;
+
+  let last = index;
+  while (omitted(last + 1)) last++;
+
+  if (last - first + 1 > LIVE_MAX_RECOVERABLE_RUN) return false;
+
+  /* A mark that is absent is past the reading frontier — not yet read rather
+     than read, so it cannot vouch for the run. The page edges are the
+     exception: nothing precedes the first word, so nothing needs to. */
+  const before = byIndex.get(first - 1);
+  const after = byIndex.get(last + 1);
+
+  const readBefore =
+    first === 0 || (before !== undefined && before.kind !== "omitted");
+  const readAfter = after !== undefined && after.kind !== "omitted";
+
+  return readBefore && readAfter;
+}
+
 /** How the page looks at one moment while the child is reading. */
 export type LiveMarks = {
   /** Marks per page-word index; words past the reading frontier are absent. */
@@ -285,7 +370,11 @@ function step(
 }
 
 /** Advance a derived preview cursor (not the committed one) over a word. */
-function previewStep(pageWords: string[], cursor: number, spokenWord: string): number {
+function previewStep(
+  pageWords: string[],
+  cursor: number,
+  spokenWord: string,
+): number {
   const out = step(pageWords, cursor, 0, spokenWord);
   return out.cursor;
 }
@@ -325,9 +414,20 @@ export type IncrementalAligner = {
    * green words and the grade disagree.
    */
   recoverFromInterims(): number;
+  /**
+   * Discard a run of omissions trailing the last word actually read.
+   *
+   * Call once at the end of a page, after recoverFromInterims(). A stray final
+   * fragment that matches further down the page makes the aligner backfill the
+   * gap as omissions; once the audio has stopped, that jump is known to be an
+   * artifact. Returns how many words were returned to unread.
+   */
+  dropTrailingOmissions(): number;
 };
 
-export function createIncrementalAligner(pageWords: string[]): IncrementalAligner {
+export function createIncrementalAligner(
+  pageWords: string[],
+): IncrementalAligner {
   /* Committed spoken words, in order, from finals only. Drives the score. */
   let spoken: string[] = [];
 
@@ -356,15 +456,27 @@ export function createIncrementalAligner(pageWords: string[]): IncrementalAligne
          for everything up to this point. */
       provisional = [];
 
-      /* A final occasionally repeats the exact last committed word (segment
-         boundaries drawn at a word boundary). Skip that single overlap. */
-      const start = spoken[spoken.length - 1] === words[0] ? 1 : 0;
-
-      const fresh = words.slice(start);
+      const fresh = words.slice(overlapWith(spoken, words));
       spoken = spoken.concat(fresh);
 
       for (let w = 0; w < fresh.length; w++) {
         const written = fresh[w];
+
+        /* A child sounding a word out says it twice — "get... getting" — and
+           the recogniser faithfully reports both. The page word behind the
+           cursor is already marked, so the echo can only be an unmatched word
+           that pushes the cursor toward stalling. Drop it, but only while the
+           page itself does not repeat the word there: "very very" must still
+           consume two page words. */
+        const echoesLast =
+          w > 0 &&
+          wordsMatch(fresh[w - 1], written) &&
+          !(
+            cursor < pageWords.length && wordsMatch(pageWords[cursor], written)
+          );
+
+        if (echoesLast) continue;
+
         const result = step(
           pageWords,
           cursor,
@@ -380,6 +492,13 @@ export function createIncrementalAligner(pageWords: string[]): IncrementalAligne
           else insertions.push(mark);
         }
       }
+
+      /* Rescue anything this segment just wrote off. Recovery used to run once
+         at the end of the page, which repaired the score but left the child
+         looking at a red word for the rest of their reading — the one place
+         the feedback actually matters. It only ever rewrites omissions, so
+         running it per segment costs nothing and converges to the same marks. */
+      recover();
     },
 
     preview(text: string): void {
@@ -392,7 +511,10 @@ export function createIncrementalAligner(pageWords: string[]): IncrementalAligne
         if (heard.length > INTERIM_MEMORY) heard.shift();
       }
 
-      if (provisional.length > 0 && provisional[0] === spoken[spoken.length - 1]) {
+      if (
+        provisional.length > 0 &&
+        provisional[0] === spoken[spoken.length - 1]
+      ) {
         /* The recogniser keeps the last committed word in its running
            hypothesis; don't let the preview re-consume it. */
         provisional = provisional.slice(1);
@@ -417,11 +539,28 @@ export function createIncrementalAligner(pageWords: string[]): IncrementalAligne
         probe = previewStep(pageWords, probe, word);
 
         for (let i = before; i < probe && i < pageWords.length; i++) {
-          if (!merged.has(i)) {
-            const kind: MarkKind =
-              wordsClose(pageWords[i], word) ? "correct" : "substituted";
-            merged.set(i, { index: i, expected: pageWords[i], spoken: word, kind });
-          }
+          if (merged.has(i)) continue;
+
+          /* Grade the preview exactly as step() will grade the commit: an
+             exact hit is correct, a near miss is a substitution. Marking a
+             near miss "correct" here made every fuzzy match flash green and
+             then turn yellow the moment its final landed — a guaranteed
+             flicker, not a race.
+
+             Words the cursor merely crossed are not this spoken word at all;
+             they are pending, so they stay unpainted rather than borrow it. */
+          let kind: MarkKind;
+
+          if (wordsMatch(pageWords[i], word)) kind = "correct";
+          else if (wordsClose(pageWords[i], word)) kind = "substituted";
+          else continue;
+
+          merged.set(i, {
+            index: i,
+            expected: pageWords[i],
+            spoken: word,
+            kind,
+          });
         }
       }
 
@@ -432,65 +571,142 @@ export function createIncrementalAligner(pageWords: string[]): IncrementalAligne
       return spoken.join(" ");
     },
 
-    recoverFromInterims(): number {
-      if (heard.length === 0) return 0;
+    recoverFromInterims: recover,
 
-      let recovered = 0;
+    dropTrailingOmissions: dropTrailing,
+  };
 
-      for (const [index, mark] of byIndex) {
-        if (mark.kind !== "omitted") continue;
+  /**
+   * Undo a forward jump that only a stray final fragment justified.
+   *
+   * The aligner cannot tell "jumped ahead" from "stopped reading" while audio
+   * is still arriving, so a last fragment — a trailing word, a noise burst, a
+   * hallucinated tail — that happens to match a word further down the page
+   * reads as a skip, and every word in between is backfilled as omitted. The
+   * child stops after a line and watches the rest of the page turn red.
+   *
+   * What separates the two, once the audio has stopped, is what follows the
+   * jump. A child who really skipped a line goes on reading, so the landing
+   * word is followed by a run of more read words. An artifact is one word
+   * stranded at the end with nothing after it. So: find the final run of
+   * omissions, and if everything after it amounts to less than a real
+   * resumption, drop that run and the stranded word with it.
+   */
+  function dropTrailing(): number {
+    /* The last word with any mark at all; the tail to judge starts after the
+       omissions that precede it. */
+    let highest = -1;
 
-        /* Only rescue a word the child demonstrably read *around*. An omission
-           with no neighbour read is a genuinely skipped stretch — a line the
-           child jumped — and a stray interim must not resurrect it. */
-        const before = byIndex.get(index - 1);
-        const after = byIndex.get(index + 1);
+    for (const index of byIndex.keys()) {
+      if (index > highest) highest = index;
+    }
 
-        const readNeighbour =
-          (before && before.kind !== "omitted") ||
-          (after && after.kind !== "omitted");
+    if (highest < 0) return 0;
 
-        if (!readNeighbour) continue;
+    /* Walk back over the read words at the end to find where the final run of
+       omissions stops. */
+    let tail = highest;
 
-        const expected = pageWords[index];
+    while (tail >= 0 && byIndex.get(tail)?.kind !== "omitted") tail--;
 
-        /* Did any retained hypothesis contain this word? wordsMatch rather than
-           equality so the recogniser's casing and punctuation do not matter. */
-        const wasHeard = heard.some((hypothesis) =>
-          hypothesis.some((word) => wordsMatch(expected, word)),
-        );
+    /* No omissions at all, or nothing read after them: nothing to undo. */
+    if (tail < 0 || tail === highest) return 0;
 
-        if (!wasHeard) continue;
+    /* Words read after the final omission run. A genuine resync is confirmed
+       by sustained reading; a stray fragment leaves one or two stranded. */
+    const after = highest - tail;
 
-        byIndex.set(index, {
-          index,
-          expected,
-          spoken: expected,
-          kind: "correct",
-        });
+    if (after >= LIVE_RESYNC_CONFIRM) return 0;
 
-        recovered++;
+    /* The last word genuinely read, before the doubtful jump. */
+    let last = tail;
+
+    while (last >= 0 && byIndex.get(last)?.kind === "omitted") last--;
+
+    /* Nothing was read before it either: leave the marks alone rather than
+       blanking the page, which would hide a genuine all-omitted result. */
+    if (last < 0) return 0;
+
+    let dropped = 0;
+
+    for (const index of [...byIndex.keys()]) {
+      if (index > last) {
+        byIndex.delete(index);
+        dropped++;
       }
+    }
 
-      /* The server rescores from the transcript, so a recovered word has to
+    /* The frontier is what the page paints as "attempted"; leaving it past the
+       last word read would keep the tail looking visited. */
+    if (dropped > 0) cursor = last + 1;
+
+    return dropped;
+  }
+
+  /**
+   * Re-check omissions against the retained interim hypotheses.
+   *
+   * Runs after every committed segment and again when the page ends; it only
+   * ever rewrites omissions, so the repeated passes converge rather than
+   * compound.
+   */
+  function recover(): number {
+    if (heard.length === 0) return 0;
+
+    let recovered = 0;
+
+    for (const [index, mark] of byIndex) {
+      if (mark.kind !== "omitted") continue;
+
+      /* Only rescue a word the child demonstrably read *around*: a stretch
+           read on neither side is a line the child jumped, and no stray interim
+           may resurrect it.
+
+           Bracket the whole run of omissions, not just this word. The
+           recogniser drops short function words in clusters — "of", "up" and
+           "and" go together — and testing immediate neighbours meant every
+           word in such a run had an omitted neighbour, so the commonest
+           droppage was the one case that could never be recovered. */
+      if (!runIsBracketed(byIndex, index)) continue;
+
+      const expected = pageWords[index];
+
+      /* Did any retained hypothesis contain this word? wordsMatch rather than
+           equality so the recogniser's casing and punctuation do not matter. */
+      const wasHeard = heard.some((hypothesis) =>
+        hypothesis.some((word) => wordsMatch(expected, word)),
+      );
+
+      if (!wasHeard) continue;
+
+      byIndex.set(index, {
+        index,
+        expected,
+        spoken: expected,
+        kind: "correct",
+      });
+
+      recovered++;
+    }
+
+    /* The server rescores from the transcript, so a recovered word has to
          appear there too, in its page position — otherwise the marks say
          correct and the grade says omitted. Rebuilding from the marks keeps
          the two definitions of "what was read" identical. */
-      if (recovered > 0) {
-        const rebuilt: string[] = [];
+    if (recovered > 0) {
+      const rebuilt: string[] = [];
 
-        for (let i = 0; i < pageWords.length; i++) {
-          const mark = byIndex.get(i);
-          if (!mark || mark.kind === "omitted") continue;
-          rebuilt.push(mark.spoken || mark.expected);
-        }
-
-        spoken = rebuilt;
+      for (let i = 0; i < pageWords.length; i++) {
+        const mark = byIndex.get(i);
+        if (!mark || mark.kind === "omitted") continue;
+        rebuilt.push(mark.spoken || mark.expected);
       }
 
-      return recovered;
-    },
-  };
+      spoken = rebuilt;
+    }
+
+    return recovered;
+  }
 }
 
 /** Create a fresh preview (non-committing) alignment state for tests/tools. */

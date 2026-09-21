@@ -22,8 +22,39 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** Seconds per chunk. Balance: shorter feels live, longer gives STT a phrase. */
-const CHUNK_SECONDS = 1.8;
+/**
+ * Seconds per chunk. Balance: shorter feels live, longer gives STT a phrase.
+ *
+ * Also a rate-limit budget. Each chunk is one provider call, so the cadence
+ * sets requests-per-minute: 60 / CHUNK_SECONDS. The project is currently
+ * enforced at 10 RPM for gemini-3.5-transcribe, so 1.8s (~33 RPM) exhausted
+ * the quota ~18s into a page — two or three lines. 7s is ~8.5 RPM, which fits
+ * with headroom for the retry below.
+ *
+ * Tier 2 documents 1000 RPM for this model; the 10 being enforced looks like a
+ * provider-side shortfall and is open with Google. If that is corrected this
+ * can go back to ~2s, which is where the live highlight feels immediate.
+ */
+const CHUNK_SECONDS = 7;
+
+/**
+ * Retries for a chunk the provider rate-limited.
+ *
+ * A dropped chunk is not a neutral loss: its words never reach the aligner, so
+ * they score as omissions and the child is marked down for words they read
+ * correctly. Retrying buys those words back.
+ */
+const RATE_LIMIT_RETRIES = 2;
+
+/**
+ * Longest a chunk may wait before its retry is abandoned.
+ *
+ * An exhausted per-minute quota can ask for most of a minute back. Honouring
+ * that literally would hold the chunk — and the drain at stop() — for that
+ * long, so a child finishing a page would sit watching a frozen screen. Past
+ * this the words are given up, which the score reports as omissions.
+ */
+const MAX_RETRY_WAIT_MS = 10000;
 
 export type RecorderState = "idle" | "recording" | "finishing";
 
@@ -62,6 +93,13 @@ export function useReadingRecorder({ onTranscript, onError }: Options) {
   /* Whether recording should continue, read inside async callbacks. State
      would be stale there — the callbacks close over the value at setup. */
   const activeRef = useRef(false);
+
+  /* Whether in-flight transcriptions may still retry. Distinct from
+     activeRef: stop() clears that one first and then drains, so a retry
+     keyed on it would abandon the last chunk of every page — the one most
+     likely to be rate-limited, arriving at the end of a burst. Cleared only
+     on unmount, when nothing is left to score. */
+  const transcribingRef = useRef(false);
 
   /* Parallel STT with ordered apply: each chunk gets an index; results land
      in a sparse map and are drained in sequence as soon as the next gap
@@ -103,28 +141,65 @@ export function useReadingRecorder({ onTranscript, onError }: Options) {
       inFlightRef.current += 1;
 
       void (async () => {
-        const form = new FormData();
-        form.append("audio", blob, "chunk.webm");
-
         let text = "";
 
         try {
-          const res = await fetch("/api/reading/transcribe", {
-            method: "POST",
-            body: form,
-          });
+          for (let attempt = 0; ; attempt++) {
+            /* Rebuilt per attempt: a FormData already sent cannot be reused. */
+            const form = new FormData();
+            form.append("audio", blob, "chunk.webm");
 
-          const data = await res.json();
+            const res = await fetch("/api/reading/transcribe", {
+              method: "POST",
+              body: form,
+            });
 
-          if (!res.ok) {
-            /* Report but keep going: a provider hiccup on one chunk should not
-               end the page. The words in it are lost, which the final score
-               reflects honestly as omissions. */
-            onErrorRef.current(
-              data.error ?? "Could not transcribe part of the reading.",
+            const data = await res.json();
+
+            if (res.ok) {
+              text = typeof data.text === "string" ? data.text.trim() : "";
+              break;
+            }
+
+            const message: string =
+              data.error ?? "Could not transcribe part of the reading.";
+
+            /* The route turns provider failures into 502s, so a rate limit
+               arrives as a 502 whose message carries the upstream 429. */
+            const rateLimited = res.status === 429 || /\b429\b/.test(message);
+
+            if (!rateLimited || attempt >= RATE_LIMIT_RETRIES) {
+              /* Report but keep going: one bad chunk should not end the page.
+                 Its words are lost, which the score reflects as omissions. */
+              onErrorRef.current(message);
+              break;
+            }
+
+            /* Wait out the window. The provider states how long; stt.ts hoists
+               it to "retryDelay=Ns" ahead of the body it truncates, so honour
+               that rather than guessing.
+
+               Capped: a quota that is already exhausted can ask for most of a
+               minute, and a child sitting in front of a frozen page is worse
+               than a few lost words. Past the cap the chunk is given up. */
+            const stated = /retryDelay=([\d.]+)s/.exec(message);
+            const waitMs = Math.min(
+              stated ? Math.ceil(Number(stated[1]) * 1000) + 250 : 2000 * (attempt + 1),
+              MAX_RETRY_WAIT_MS,
             );
-          } else {
-            text = typeof data.text === "string" ? data.text.trim() : "";
+
+            if (waitMs >= MAX_RETRY_WAIT_MS && stated) {
+              onErrorRef.current(message);
+              break;
+            }
+
+            if (!transcribingRef.current) break;
+
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+
+            /* The page was torn down while waiting; nothing will read the
+               result, so stop spending calls on it. */
+            if (!transcribingRef.current) break;
           }
         } catch {
           onErrorRef.current("Lost connection while transcribing.");
@@ -203,6 +278,7 @@ export function useReadingRecorder({ onTranscript, onError }: Options) {
 
     streamRef.current = stream;
     activeRef.current = true;
+    transcribingRef.current = true;
     startedAtRef.current = Date.now();
     chunkSeqRef.current = 0;
     nextApplyRef.current = 0;
@@ -273,6 +349,7 @@ export function useReadingRecorder({ onTranscript, onError }: Options) {
   useEffect(() => {
     return () => {
       activeRef.current = false;
+      transcribingRef.current = false;
       if (cycleRef.current) clearTimeout(cycleRef.current);
       if (tickRef.current) clearInterval(tickRef.current);
       if (recorderRef.current?.state === "recording") recorderRef.current.stop();

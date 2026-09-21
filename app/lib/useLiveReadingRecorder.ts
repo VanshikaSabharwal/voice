@@ -497,7 +497,13 @@ export function useLiveReadingRecorder({ pageWords, onError }: Options) {
 
     if (mode !== "fallback") {
       recovered = alignerRef.current.recoverFromInterims();
-      if (recovered > 0) setMarks(alignerRef.current.snapshot());
+
+      /* After recovery, not before: recovery turns omissions back into correct
+         words, which can move the last-read word further down the page and so
+         shrink what counts as trailing. */
+      const dropped = alignerRef.current.dropTrailingOmissions();
+
+      if (recovered > 0 || dropped > 0) setMarks(alignerRef.current.snapshot());
     }
 
     /* The transcript scored comes from whichever path actually ran: the

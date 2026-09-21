@@ -49,6 +49,61 @@ export function scoreMarks(marks: WordMark[], durationSec: number): PageScore {
   return { totalWords, correct, substituted, omitted, inserted, accuracy, wpm };
 }
 
+/**
+ * How many read words after a run of omissions count as genuinely resuming.
+ *
+ * Mirrors LIVE_RESYNC_CONFIRM in live-align: the aligner needs two confirming
+ * words to trust a forward jump, so undoing one takes the same evidence.
+ */
+const TRAILING_RESUME_WORDS = 2;
+
+/**
+ * Drop omissions trailing the last word the child actually read.
+ *
+ * A stray fragment at the end of a recording — a trailing word, noise, a
+ * hallucinated tail — that matches a word further down the page makes the
+ * aligner read a forward jump and backfill the gap as omissions. Nothing was
+ * skipped; the child simply stopped.
+ *
+ * Deliberately NOT applied to scoring: accuracy is correct-over-page-words, so
+ * an unfinished page must still score low. This only affects which words are
+ * reported as miscues, so the teacher sees the words the child got wrong
+ * rather than the ones they never reached.
+ */
+function dropTrailingOmissions(marks: WordMark[]): WordMark[] {
+  const byIndex = new Map<number, WordMark>();
+
+  for (const mark of marks) {
+    if (mark.index >= 0) byIndex.set(mark.index, mark);
+  }
+
+  let highest = -1;
+
+  for (const index of byIndex.keys()) {
+    if (index > highest) highest = index;
+  }
+
+  if (highest < 0) return marks;
+
+  let tail = highest;
+
+  while (tail >= 0 && byIndex.get(tail)?.kind !== "omitted") tail--;
+
+  if (tail < 0 || tail === highest) return marks;
+
+  /* A genuine mid-page skip is followed by sustained reading; a stray final
+     fragment strands one or two words at the end. */
+  if (highest - tail >= TRAILING_RESUME_WORDS) return marks;
+
+  let last = tail;
+
+  while (last >= 0 && byIndex.get(last)?.kind === "omitted") last--;
+
+  if (last < 0) return marks;
+
+  return marks.filter((mark) => mark.index < 0 || mark.index <= last);
+}
+
 /** Align a transcript against page text and score it in one step. */
 export function scoreReading(
   pageText: string,
@@ -56,6 +111,9 @@ export function scoreReading(
   durationSec: number,
   passThreshold: number = DEFAULT_PASS_THRESHOLD,
 ): { marks: WordMark[]; score: PageScore; complete: boolean } {
+  /* Scored from the unfiltered marks: an unread tail is still unread, and
+     accuracy is correct-over-page-words by design. The filtering below only
+     changes how those words are labelled, never how many there are. */
   const marks = alignWords(tokenize(pageText), tokenize(transcript));
   const score = scoreMarks(marks, durationSec);
 
@@ -67,7 +125,7 @@ export function scoreReading(
  * in page order, deduplicated by page position.
  */
 export function miscuedWords(marks: WordMark[]): WordMark[] {
-  return marks.filter((m) => m.kind !== "correct");
+  return dropTrailingOmissions(marks).filter((m) => m.kind !== "correct");
 }
 
 /** A coarse band for the report card, so a number gets a plain-language label. */

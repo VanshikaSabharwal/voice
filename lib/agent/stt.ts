@@ -124,7 +124,17 @@ async function transcribeGemini(input: TranscribeInput, key: string): Promise<st
   const rawResponse = await res.text();
 
   if (!res.ok) {
-    throw new Error(`Gemini STT ${res.status}: ${rawResponse.slice(0, 1000)}`);
+    /* Hoist the retry delay ahead of the truncation. Gemini reports it in
+       error.details[RetryInfo], past the 1000-char cut on a quota error, so
+       slicing alone dropped exactly the field the client needs to wait the
+       right amount of time — it would back off two seconds against a stated
+       thirty-six and burn its attempts re-failing. */
+    const retryDelay = /"retryDelay"\s*:\s*"([\d.]+)s"/.exec(rawResponse);
+    const prefix = retryDelay ? ` retryDelay=${retryDelay[1]}s` : "";
+
+    throw new Error(
+      `Gemini STT ${res.status}:${prefix} ${rawResponse.slice(0, 1000)}`,
+    );
   }
 
   let data: {

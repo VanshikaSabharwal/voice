@@ -37,10 +37,22 @@ export function normalize(word: string): string {
     .replace(/^'+|'+$/g, "");
 }
 
-/** Split text into comparable words, dropping anything that normalises away. */
+/**
+ * Split text into comparable words, dropping anything that normalises away.
+ *
+ * Hyphens and dashes split like whitespace. A page writes "rabbit-hole" and
+ * the recogniser returns "rabbit hole", so treating the hyphen as part of the
+ * word compared one token against two: normalize() strips the hyphen, leaving
+ * "rabbithole", which matches neither side. The word was marked wrong however
+ * clearly it was read, and the token-count mismatch dragged the alignment of
+ * the words after it out of step.
+ *
+ * Splitting costs nothing when the reader does say it as one word: the two
+ * halves are still spoken in order, so they align as two correct tokens.
+ */
 export function tokenize(text: string): string[] {
   return text
-    .split(/\s+/)
+    .split(/[\s‐-―\-]+/)
     .map((w) => w.trim())
     .filter(Boolean);
 }
